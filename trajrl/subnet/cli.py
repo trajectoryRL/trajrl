@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -77,52 +77,6 @@ def status(
 
 
 @app.command()
-def validators(
-    json_output: Annotated[bool, _json_opt] = False,
-    base_url: Annotated[str, _base_url_opt] = "https://trajrl.com",
-) -> None:
-    """List all validators with heartbeat status and LLM model."""
-    data = _client(base_url).validators()
-    if _want_json(json_output):
-        _print_json(data)
-    else:
-        fmt.display_validators(data)
-
-
-@app.command()
-def scores(
-    validator: Annotated[str | None, typer.Argument(help="Validator SS58 hotkey.")] = None,
-    uid: Annotated[int | None, typer.Option("--uid", "-u", help="Validator UID (alternative to hotkey)")] = None,
-    json_output: Annotated[bool, _json_opt] = False,
-    base_url: Annotated[str, _base_url_opt] = "https://trajrl.com",
-) -> None:
-    """Per-miner evaluation scores from a validator. Picks first active validator if none specified."""
-    client = _client(base_url)
-    hotkey = _resolve_validator(client, validator, uid)
-    data = client.scores_by_validator(validator=hotkey)
-    if _want_json(json_output):
-        _print_json(data)
-    else:
-        fmt.display_scores(data)
-
-
-@app.command()
-def miner(
-    hotkey: Annotated[str | None, typer.Argument(help="Miner SS58 hotkey.")] = None,
-    uid: Annotated[int | None, typer.Option("--uid", "-u", help="Miner UID (alternative to hotkey)")] = None,
-    json_output: Annotated[bool, _json_opt] = False,
-    base_url: Annotated[str, _base_url_opt] = "https://trajrl.com",
-) -> None:
-    """Show detailed evaluation data for a specific miner."""
-    client = _client(base_url)
-    data = _resolve_miner(client, hotkey, uid)
-    if _want_json(json_output):
-        _print_json(data)
-    else:
-        fmt.display_miner(data)
-
-
-@app.command()
 def download(
     hotkey: Annotated[str | None, typer.Argument(help="Miner SS58 hotkey.")] = None,
     pack_hash: Annotated[str | None, typer.Argument(help="Pack SHA-256 hash (default: current pack).")] = None,
@@ -165,57 +119,6 @@ def submissions(
         _print_json(data)
     else:
         fmt.display_submissions(data, failed_only=failed)
-
-
-@app.command()
-def logs(
-    validator: Annotated[Optional[str], typer.Option("--validator", "-v", help="Validator hotkey or UID.")] = None,
-    miner_key: Annotated[Optional[str], typer.Option("--miner", "-m", help="Filter by miner hotkey.")] = None,
-    log_type: Annotated[Optional[str], typer.Option("--type", "-t", help="Log type: 'miner' or 'cycle'.")] = None,
-    eval_id: Annotated[Optional[str], typer.Option("--eval-id", help="Filter by eval cycle ID.")] = None,
-    pack_hash: Annotated[Optional[str], typer.Option("--pack-hash", help="Filter by pack hash.")] = None,
-    limit: Annotated[int, typer.Option("--limit", "-l", help="Max results to return.")] = 50,
-    show: Annotated[bool, typer.Option("--show", "-s", help="Download and display the latest log content.")] = False,
-    json_output: Annotated[bool, _json_opt] = False,
-    base_url: Annotated[str, _base_url_opt] = "https://trajrl.com",
-) -> None:
-    """List or view evaluation log archives.
-
-    Without --show: lists available log archives.
-    With --show: downloads and displays the latest matching log.
-    """
-    client = _client(base_url)
-
-    if show:
-        vali_hotkey = validator
-        if vali_hotkey is None:
-            vali_hotkey = _resolve_validator(client, None, None)
-        try:
-            data = client.cycle_log(vali_hotkey, eval_id=eval_id)
-        except ValueError as e:
-            if _want_json(json_output):
-                _print_json({"error": str(e)})
-            else:
-                fmt.console.print(f"[yellow]{e}[/]")
-            raise typer.Exit(1)
-        if _want_json(json_output):
-            _print_json(data)
-        else:
-            fmt.display_cycle_log(data)
-        return
-
-    data = client.eval_logs(
-        validator=validator,
-        miner=miner_key,
-        log_type=log_type,
-        eval_id=eval_id,
-        pack_hash=pack_hash,
-        limit=limit,
-    )
-    if _want_json(json_output):
-        _print_json(data)
-    else:
-        fmt.display_logs(data)
 
 
 @app.command()
