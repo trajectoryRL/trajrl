@@ -1,6 +1,6 @@
 # trajrl
 
-Official Python package for [TrajectoryRL](https://trajrl.com).
+Official Python package for [TrajectoryRL](https://github.com/trajectoryRL/trajectoryRL) — the Bittensor SN11 skill factory. Website: [trajrl.com](https://trajrl.com).
 
 `trajrl` publishes skills powered by the subnet — ready-to-use capabilities for AI agents, miners, and developers. Each skill is a self-contained `SKILL.md` that agents can discover and follow directly.
 
@@ -38,6 +38,11 @@ trajrl subnet status | jq '.validators.validators[].hotkey'
 
 See [`skills/subnet-analyze/SKILL.md`](skills/subnet-analyze/SKILL.md) for full usage reference.
 
-## API Reference
+## Links
 
-Subnet data comes from the [TrajectoryRL Public API](https://trajrl.com) — read-only, no authentication required.
+- **Subnet repo:** https://github.com/trajectoryRL/trajectoryRL — incentive mechanism, validator, miner
+- **Website:** https://trajrl.com — leaderboard, live subnet data, dashboards
+- **Staging site:** https://stage.trajrl.com
+- **Public API spec:** [PUBLIC_API.md](https://github.com/trajectoryRL/trajectoryrl.web/blob/main/PUBLIC_API.md) — read-only, no auth, base URL `https://trajrl.com`
+- **Incentive mechanism:** [INCENTIVE_MECHANISM.md](https://github.com/trajectoryRL/trajectoryRL/blob/main/INCENTIVE_MECHANISM.md)
+- **Evaluation dataset:** [DATASET_v0.1.md](https://github.com/trajectoryRL/trajectoryRL/blob/main/DATASET_v0.1.md)
