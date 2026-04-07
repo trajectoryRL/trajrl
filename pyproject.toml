@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trajrl"
-version = "0.3.0"
+version = "0.3.1"
 description = "Official skill collection for TrajectoryRL (Bittensor SN11) — discover and run subnet skills."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,3 +17,7 @@ dependencies = [
 
 [project.scripts]
 trajrl = "trajrl.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["trajrl*"]
+
