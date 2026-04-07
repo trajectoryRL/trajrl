@@ -1,8 +1,8 @@
 # trajrl
 
-Official Python package for [TrajectoryRL](https://trajrl.com) (Bittensor SN11).
+Official Python package for [TrajectoryRL](https://trajrl.com).
 
-`trajrl` publishes skills powered by the subnet — ready-to-use capabilities for AI agents, miners, and developers. Each skill wraps subnet data and tooling into a self-contained `SKILL.md` that agents can discover and follow directly.
+`trajrl` publishes skills powered by the subnet — ready-to-use capabilities for AI agents, miners, and developers. Each skill is a self-contained `SKILL.md` that agents can discover and follow directly.
 
 Designed for AI agents (Claude Code, Cursor, Codex) and humans alike — outputs JSON when piped, Rich tables when interactive.
 
