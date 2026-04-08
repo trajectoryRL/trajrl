@@ -7,6 +7,14 @@ description: Query and analyze TrajectoryRL subnet (SN11) data — validators, m
 
 Analyze TrajectoryRL subnet data using the `trajrl` CLI.
 
+## Setup
+
+Ensure `trajrl` is installed before running commands:
+
+```bash
+pip install trajrl
+```
+
 ## Commands
 
 Entry point: `trajrl subnet <command>`
