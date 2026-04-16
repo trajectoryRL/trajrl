@@ -139,3 +139,107 @@ def analyze(
         if not hotkey:
             raise typer.Exit()
     _analyze.analyze(client, hotkey, deep=deep, deep_n=deep_n, show_logs=show_logs, dump=dump)
+
+
+@app.command()
+def logs(
+    validator: Annotated[str | None, typer.Option("--validator", "-v",
+        help="Filter by validator SS58 hotkey.")] = None,
+    miner: Annotated[str | None, typer.Option("--miner", "-m",
+        help="Filter by miner SS58 hotkey.")] = None,
+    log_type: Annotated[str | None, typer.Option("--type", "-t",
+        help="Log type: 'miner' (per-miner eval archive) or 'cycle' "
+             "(validator cycle log). Omit for any.")] = None,
+    eval_id: Annotated[str | None, typer.Option("--eval-id",
+        help="Filter by eval cycle ID.")] = None,
+    pack_hash: Annotated[str | None, typer.Option("--pack-hash",
+        help="Filter by pack hash.")] = None,
+    limit: Annotated[int, typer.Option("--limit", "-l",
+        help="Max results when listing.")] = 50,
+    show: Annotated[bool, typer.Option("--show", "-s",
+        help="Download and display the latest matching log.")] = False,
+    dump_to: Annotated[str | None, typer.Option("--dump-to",
+        help="Extract the latest matching archive to this directory. "
+             "Implies --show semantics (takes the top match).")] = None,
+    json_output: Annotated[bool, _json_opt] = False,
+    base_url: Annotated[str, _base_url_opt] = "https://trajrl.com",
+) -> None:
+    """List or view evaluation log archives.
+
+    - Without --show or --dump-to: lists matching archive metadata.
+    - With --show: downloads latest match; cycle logs print validator.log,
+      miner logs print archive contents + per-episode criteria.
+    - With --dump-to DIR: extracts the archive to DIR for local inspection.
+    """
+    from trajrl.subnet.api import extract_cycle_log, extract_archive_to_dir
+
+    client = _client(base_url)
+
+    # --show or --dump-to: fetch the actual archive
+    if show or dump_to:
+        try:
+            result = client.log_archive(
+                validator=validator, miner=miner, log_type=log_type,
+                eval_id=eval_id, pack_hash=pack_hash,
+            )
+        except ValueError as e:
+            if _want_json(json_output):
+                _print_json({"error": str(e)})
+            else:
+                fmt.console.print(f"[yellow]{e}[/]")
+            raise typer.Exit(1)
+
+        entry = result["log_entry"]
+        archive = result["archive"]
+
+        if dump_to:
+            extract_archive_to_dir(archive, dump_to)
+            msg = {"extracted_to": dump_to, "log_entry": entry}
+            if _want_json(json_output):
+                _print_json(msg)
+            else:
+                fmt.console.print(
+                    f"[green]Extracted to[/] [bold]{dump_to}[/]")
+                fmt.console.print(
+                    f"  Eval ID: {entry.get('evalId', '—')}  "
+                    f"Type: {entry.get('logType', '—')}  "
+                    f"Size: {fmt.size_fmt(entry.get('sizeBytes'))}")
+            return
+
+        # --show: type-aware pretty print
+        if entry.get("logType") == "cycle":
+            text = extract_cycle_log(archive) or ""
+            if _want_json(json_output):
+                _print_json({"log_entry": entry, "text": text})
+            else:
+                fmt.display_cycle_log({"log_entry": entry, "text": text})
+        else:
+            if _want_json(json_output):
+                # In JSON mode, list members + metadata (not raw bytes)
+                from trajrl.subnet.api import (
+                    list_archive_members, extract_archive_file,
+                )
+                members = list_archive_members(archive)
+                meta_text = extract_archive_file(archive, "metadata.json")
+                _print_json({
+                    "log_entry": entry,
+                    "members": [{"name": n, "size": s} for n, s in members],
+                    "metadata": json.loads(meta_text) if meta_text else None,
+                })
+            else:
+                fmt.display_miner_log(entry, archive)
+        return
+
+    # Otherwise: list metadata
+    data = client.eval_logs(
+        validator=validator,
+        miner=miner,
+        log_type=log_type,
+        eval_id=eval_id,
+        pack_hash=pack_hash,
+        limit=limit,
+    )
+    if _want_json(json_output):
+        _print_json(data)
+    else:
+        fmt.display_logs(data)

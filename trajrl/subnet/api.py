@@ -33,6 +33,43 @@ def extract_cycle_log(archive_bytes: bytes) -> str | None:
     return archive_bytes.decode("utf-8", errors="replace")
 
 
+def list_archive_members(archive_bytes: bytes) -> list[tuple[str, int]]:
+    """Return a list of (name, size) tuples for all files in a tar.gz archive."""
+    try:
+        buf = io.BytesIO(archive_bytes)
+        with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+            return sorted(
+                (m.name, m.size)
+                for m in tar.getmembers() if m.isfile()
+            )
+    except Exception:
+        return []
+
+
+def extract_archive_file(archive_bytes: bytes, name: str) -> str | None:
+    """Read one file from a tar.gz archive as text. Returns None if missing."""
+    try:
+        buf = io.BytesIO(archive_bytes)
+        with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name == name or member.name.endswith("/" + name):
+                    f = tar.extractfile(member)
+                    if f:
+                        return f.read().decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return None
+
+
+def extract_archive_to_dir(archive_bytes: bytes, out_dir: "str") -> None:
+    """Extract a tar.gz archive to a directory."""
+    import os
+    os.makedirs(out_dir, exist_ok=True)
+    buf = io.BytesIO(archive_bytes)
+    with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+        tar.extractall(out_dir)
+
+
 @dataclass
 class TrajRLClient:
     base_url: str = DEFAULT_BASE_URL
@@ -121,40 +158,76 @@ class TrajRLClient:
         })
         return self._get("/api/eval-logs", params=params)
 
+    def log_archive(
+        self,
+        *,
+        validator: str | None = None,
+        miner: str | None = None,
+        log_type: str | None = None,
+        eval_id: str | None = None,
+        pack_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch the latest matching log archive, return metadata + raw bytes.
+
+        Generic retrieval path used by `trajrl logs --show`. Returns
+        ``{"log_entry": <metadata dict>, "archive": <raw tar.gz bytes>}``.
+
+        ``log_type`` is optional — omit to match any (miner or cycle).
+        At least one filter should be provided; otherwise this returns the
+        most recent archive for anyone on the network.
+
+        Raises ``ValueError`` when no archive matches or download fails.
+        """
+        params: dict[str, Any] = {"limit": 5}
+        if validator is not None:
+            params["validator"] = validator
+        if miner is not None:
+            params["miner"] = miner
+        if log_type is not None:
+            params["log_type"] = log_type
+        if eval_id is not None:
+            params["eval_id"] = eval_id
+        if pack_hash is not None:
+            params["pack_hash"] = pack_hash
+
+        data = self.eval_logs(**params)
+        logs = data.get("logs", [])
+        if not logs:
+            raise ValueError("No matching log archives found")
+
+        log_entry = logs[0]
+        gcs_url = log_entry.get("gcsUrl")
+        if not gcs_url:
+            raise ValueError("Log archive has no download URL")
+
+        try:
+            resp = httpx.get(gcs_url, timeout=30, follow_redirects=True)
+            resp.raise_for_status()
+        except Exception as exc:
+            raise ValueError(f"Failed to download log archive: {exc}") from exc
+
+        return {"log_entry": log_entry, "archive": resp.content}
+
     def cycle_log(
         self,
         validator: str,
         *,
         eval_id: str | None = None,
     ) -> dict[str, Any]:
-        """Fetch the latest cycle log text for a validator."""
-        params: dict[str, Any] = {"validator": validator, "log_type": "cycle"}
-        if eval_id is not None:
-            params["eval_id"] = eval_id
-        else:
-            params["limit"] = 5
+        """Backwards-compat: fetch the latest cycle log text for a validator.
 
-        data = self.eval_logs(**params)
-        logs = data.get("logs", [])
-        if not logs:
-            raise ValueError("No cycle logs found for this validator")
-
-        log_entry = logs[0]
-        gcs_url = log_entry.get("gcsUrl")
-        if not gcs_url:
-            raise ValueError("Cycle log has no download URL")
-
-        try:
-            resp = httpx.get(gcs_url, timeout=30, follow_redirects=True)
-            resp.raise_for_status()
-        except Exception as exc:
-            raise ValueError(f"Failed to download cycle log: {exc}") from exc
-
-        text = extract_cycle_log(resp.content)
+        Returns ``{"log_entry": ..., "text": <validator.log text>}``.
+        Prefer ``log_archive()`` for new code.
+        """
+        result = self.log_archive(
+            validator=validator,
+            log_type="cycle",
+            eval_id=eval_id,
+        )
+        text = extract_cycle_log(result["archive"])
         if not text:
             raise ValueError("Failed to extract validator.log from archive")
-
-        return {"log_entry": log_entry, "text": text}
+        return {"log_entry": result["log_entry"], "text": text}
 
     # -- internal ----------------------------------------------------------
 

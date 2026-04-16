@@ -356,6 +356,96 @@ def display_cycle_log(data: dict) -> None:
     console.print(text)
 
 
+def display_miner_log(log_entry: dict, archive_bytes: bytes) -> None:
+    """Display a miner log archive (S1: SKILL.md + JUDGE.md + per-episode files).
+
+    Shows the file tree, metadata.json summary, and per-episode evaluation
+    scores. Full transcripts are not printed (use --dump-to DIR for those).
+    """
+    import json
+
+    from trajrl.subnet.api import (
+        extract_archive_file,
+        list_archive_members,
+    )
+
+    lines = [
+        f"  Eval ID: [bold]{log_entry.get('evalId', '—')}[/]",
+        f"  Validator: [cyan]{trunc(log_entry.get('validatorHotkey'))}[/]",
+        f"  Miner:     [cyan]{trunc(log_entry.get('minerHotkey'))}[/] "
+        f"(uid {log_entry.get('minerUid', '—')})",
+        f"  Pack:      {trunc(log_entry.get('packHash'), 10)}",
+        f"  Block:     {log_entry.get('blockHeight', '—')}",
+        f"  Size:      {size_fmt(log_entry.get('sizeBytes'))}",
+        f"  Created:   {relative_time(log_entry.get('createdAt'))}",
+    ]
+    console.print(Panel("\n".join(lines), title="Miner Eval Log",
+                        border_style="cyan"))
+
+    # File tree
+    members = list_archive_members(archive_bytes)
+    if members:
+        tree_table = Table(title="Archive Contents", show_header=True)
+        tree_table.add_column("File")
+        tree_table.add_column("Size", justify="right")
+        for name, size in members:
+            tree_table.add_row(name, size_fmt(size))
+        console.print(tree_table)
+
+    # metadata.json summary (S1 evals have this)
+    meta_text = extract_archive_file(archive_bytes, "metadata.json")
+    if meta_text:
+        try:
+            meta = json.loads(meta_text)
+            summary = [
+                f"  Scenario:     [bold]{meta.get('scenario', '—')}[/]",
+                f"  Final score:  [bold green]{meta.get('final_score', 0):.4f}[/]",
+                f"  Mean quality: {meta.get('mean_quality', 0):.4f}",
+                f"  Delta:        {meta.get('delta', 0):.4f}  "
+                f"(bonus {meta.get('learning_bonus', 0):.4f})",
+                f"  Episodes:     {meta.get('episode_qualities', [])}",
+            ]
+            console.print(Panel("\n".join(summary), title="Eval Summary",
+                                border_style="green"))
+        except Exception:
+            pass
+
+    # Per-episode evaluation.json criteria
+    n_episodes = sum(
+        1 for name, _ in members
+        if name.startswith("episodes/episode_") and name.endswith("/evaluation.json")
+    )
+    if n_episodes:
+        crit_table = Table(title=f"Per-Episode Criteria ({n_episodes} episodes)")
+        crit_table.add_column("Episode", justify="right")
+        crit_table.add_column("Quality", justify="right")
+        # Collect all criteria names across episodes
+        eval_data = []
+        for i in range(n_episodes):
+            eval_text = extract_archive_file(
+                archive_bytes, f"episodes/episode_{i}/evaluation.json")
+            if eval_text:
+                try:
+                    eval_data.append(json.loads(eval_text))
+                except Exception:
+                    eval_data.append({})
+            else:
+                eval_data.append({})
+        criteria_names = set()
+        for ed in eval_data:
+            criteria_names.update((ed.get("criteria") or {}).keys())
+        for name in sorted(criteria_names):
+            crit_table.add_column(name[:8], justify="right")
+        for i, ed in enumerate(eval_data):
+            row = [str(i), f"{ed.get('quality', 0):.2f}"]
+            crits = ed.get("criteria") or {}
+            for name in sorted(criteria_names):
+                v = crits.get(name)
+                row.append(f"{v:.2f}" if isinstance(v, (int, float)) else "—")
+            crit_table.add_row(*row)
+        console.print(crit_table)
+
+
 def display_logs(data: dict) -> None:
     logs = data.get("logs", [])
     table = Table(title=f"Eval Logs ({len(logs)})")
