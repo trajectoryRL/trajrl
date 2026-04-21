@@ -8,7 +8,7 @@ import typer
 
 from trajrl.subnet.cli import app as subnet_app
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 app = typer.Typer(
     name="trajrl",
