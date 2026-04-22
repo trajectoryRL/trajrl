@@ -1,4 +1,9 @@
-"""trajrl — official skill collection for TrajectoryRL (Bittensor SN11)."""
+"""trajrl — skill hub installer for TrajectoryRL.
+
+Mirrors the npm `trajrl` CLI: discover skills published on trajrl.com and
+install them into local agent skill directories (Claude Code, Cursor, Codex,
+Hermes, OpenClaw).
+"""
 
 from __future__ import annotations
 
@@ -6,18 +11,18 @@ from typing import Annotated
 
 import typer
 
-from trajrl.subnet.cli import app as subnet_app
-
-__version__ = "0.3.3"
+from trajrl._version_flag import make_version_callback
+from trajrl.skills.cli import app as skills_app
 
 app = typer.Typer(
     name="trajrl",
-    help="Official skill collection for TrajectoryRL (Bittensor SN11).",
+    help="Skill hub installer for TrajectoryRL — browse and install agent skills "
+         "optimized by the TrajectoryRL network.",
     no_args_is_help=True,
     pretty_exceptions_enable=False,
 )
 
-app.add_typer(subnet_app, name="subnet")
+app.add_typer(skills_app, name="skills")
 
 
 @app.callback()
@@ -28,15 +33,9 @@ def main(
             "--version",
             "-v",
             help="Show version and exit.",
-            callback=_version_callback,
+            callback=make_version_callback("trajrl"),
             is_eager=True,
         ),
     ] = False,
 ) -> None:
     pass
-
-
-def _version_callback(value: bool) -> None:
-    if value:
-        print(f"trajrl version {__version__}")
-        raise typer.Exit()

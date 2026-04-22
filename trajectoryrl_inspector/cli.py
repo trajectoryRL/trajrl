@@ -1,4 +1,4 @@
-"""trajrl subnet — query live TrajectoryRL subnet data."""
+"""trajectoryrl-inspector — deep analysis CLI for the TrajectoryRL subnet (Bittensor SN11)."""
 
 from __future__ import annotations
 
@@ -8,15 +8,35 @@ from typing import Annotated
 
 import typer
 
-from trajrl.subnet.api import TrajRLClient
-from trajrl.subnet import display as fmt
-from trajrl.subnet import analyze as _analyze
+from trajrl._version_flag import make_version_callback
+from trajectoryrl_inspector.api import TrajRLClient
+from trajectoryrl_inspector import display as fmt
+from trajectoryrl_inspector import analyze as _analyze
 
 app = typer.Typer(
-    name="subnet",
-    help="Query live validator, miner, and evaluation data from the TrajectoryRL subnet.",
+    name="trajectoryrl-inspector",
+    help="Deep analysis CLI for the TrajectoryRL subnet (Bittensor SN11): "
+         "validators, miners, scores, weights, scenarios, eval logs.",
     no_args_is_help=True,
+    pretty_exceptions_enable=False,
 )
+
+
+@app.callback()
+def _main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            "-v",
+            help="Show version and exit.",
+            callback=make_version_callback("trajectoryrl-inspector"),
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
+    pass
+
 
 # -- shared option defaults ------------------------------------------------
 
@@ -171,7 +191,7 @@ def logs(
       miner logs print archive contents + per-episode criteria.
     - With --dump-to DIR: extracts the archive to DIR for local inspection.
     """
-    from trajrl.subnet.api import extract_cycle_log, extract_archive_to_dir
+    from trajectoryrl_inspector.api import extract_cycle_log, extract_archive_to_dir
 
     client = _client(base_url)
 
@@ -216,7 +236,7 @@ def logs(
         else:
             if _want_json(json_output):
                 # In JSON mode, list members + metadata (not raw bytes)
-                from trajrl.subnet.api import (
+                from trajectoryrl_inspector.api import (
                     list_archive_members, extract_archive_file,
                 )
                 members = list_archive_members(archive)

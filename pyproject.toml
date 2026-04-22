@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trajrl"
-version = "0.3.3"
-description = "Official skill collection for TrajectoryRL (Bittensor SN11) — discover and run subnet skills."
+version = "1.0.0"
+description = "TrajRL Python toolbelt — installs trajrl skill hub CLI plus trajectoryrl-inspector and bittensor-subnet-inspector."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -13,11 +13,13 @@ dependencies = [
     "typer>=0.9",
     "httpx>=0.25",
     "rich>=13.0",
+    "bittensor>=8.0",
 ]
 
 [project.scripts]
 trajrl = "trajrl.cli:app"
+trajectoryrl-inspector = "trajectoryrl_inspector.cli:app"
+bittensor-subnet-inspector = "bittensor_subnet_inspector.cli:app"
 
 [tool.setuptools.packages.find]
-include = ["trajrl*"]
-
+include = ["trajrl*", "trajectoryrl_inspector*", "bittensor_subnet_inspector*"]
