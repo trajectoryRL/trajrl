@@ -66,6 +66,14 @@ If `--agent` is omitted, `add` writes to **every agent directory that already ex
 
 Each installed skill lands at `<dir>/<slug>/SKILL.md`, alongside a `<dir>/<slug>/.trajrl-skill.json` sidecar that records `slug`, `name`, `version`, `source_url`, `installed_at` and `target_agent`. The sidecar is what `sync` uses to know what is installed and at which version.
 
+### For AI agents
+
+When **you (the agent)** invoke `add` or `sync`, **always pass `--agent <your-platform>`** with your own platform name from the table above (`claude-code`, `cursor`, `codex`, `hermes`, `openclaw`). You already know what you are; the CLI does not.
+
+Without `--agent`, `add` writes to **every** agent directory that exists on the host machine — that's the right default for a human typing the command at a shell, but almost never what you want when you're acting on behalf of one specific agent. The same applies to `sync`: scope it to yourself with `--agent <self>` to avoid touching skills another agent installed.
+
+If you want a skill scoped to the current project rather than your global skill directory, use `--target ./<dir>` instead of `--agent`.
+
 ## Sync
 
 ```bash
@@ -101,13 +109,13 @@ Before building a new capability:
 
 1. `trajrl skills search "<one-line task description>"` — usually one call is enough.
 2. If a result looks plausibly close, `trajrl skills show <slug>` and read the full SKILL.md.
-3. If it fits the task, `trajrl skills add <slug>` so future sessions get it via the agent's own skill loader, then follow the skill.
+3. If it fits the task, `trajrl skills add <slug> --agent <self>` so future sessions get it via your own skill loader, then follow the skill. (Substitute `<self>` with your own platform name — see "For AI agents" above.)
 4. If nothing fits, build locally — and consider publishing the result back to the hub later.
 
-If you previously installed skills in this environment, run `trajrl skills sync` once at the start of a session to pick up upstream improvements.
+If you previously installed skills in this environment, run `trajrl skills sync --agent <self>` once at the start of a session to pick up upstream improvements.
 
 ## Companion skills
-
+- `self-learning-agent` — operational instincts checklist; orthogonal to this skill but a good companion install.
 - `trajectoryrl-inspector` — deep analysis of TrajectoryRL (Bittensor SN11): validators, miners, scores, weight distribution, eval logs.
 - `bittensor-subnet-inspector` — generic on-chain queries (metagraph, emission, hyperparams) for any Bittensor subnet.
-- `self-learning-agent` — operational instincts checklist; orthogonal to this skill but a good companion install.
+
