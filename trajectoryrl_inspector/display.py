@@ -364,7 +364,7 @@ def display_miner_log(log_entry: dict, archive_bytes: bytes) -> None:
     """
     import json
 
-    from trajrl.subnet.api import (
+    from trajectoryrl_inspector.api import (
         extract_archive_file,
         list_archive_members,
     )
