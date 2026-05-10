@@ -2,15 +2,16 @@
 
 The official Python CLI for [TrajectoryRL](https://github.com/trajectoryRL/trajectoryRL) — an open skill factory that uses Bittensor's distributed compute and incentive layer to produce state-of-the-art agent skills.
 
-One install, one binary, three groups:
+One install, one binary, two groups:
 
 | Group | What it does |
 |---|---|
 | `trajrl skills ...` | Browse and install agent skills published on `trajrl.com` into your local agent skill dirs (Claude Code, Cursor, Codex, Hermes, OpenClaw). |
 | `trajrl <subnet command>` | Live SN11 state — winner, challenger, queue, validators, miners, packs, eval logs, deep validator analysis. |
-| `trajrl chain ...` | Generic Bittensor on-chain queries for any subnet — metagraph and hyperparams (tempo / emission / burn). |
 
 CLI output is Rich tables in a TTY and JSON when piped.
+
+For generic Bittensor on-chain queries (metagraph, hyperparams) use [`btcli`](https://github.com/opentensor/btcli) — the official Bittensor CLI.
 
 ## Install
 
@@ -101,16 +102,6 @@ Default agent skill directories (auto-detected by directory existence):
 | Hermes | `~/.hermes/skills/<slug>/SKILL.md` |
 | OpenClaw | `~/.openclaw/skills/<slug>/SKILL.md` |
 
-## Chain queries (any subnet)
-
-```bash
-trajrl chain metagraph --netuid 11
-trajrl chain metagraph --netuid 11 --network test
-trajrl chain emission --netuid 11
-```
-
-Override the network with `--network` / `-n` or `BT_NETWORK` (`finney` | `test` | `local` | `archive` | `ws(s)://endpoint`).
-
 ## Global options
 
 Every command accepts:
@@ -121,8 +112,6 @@ Every command accepts:
 | `--base-url` | Override API base URL (env: `TRAJRL_BASE_URL`) |
 | `--version` / `-v` | Print version and exit |
 
-`trajrl chain` commands additionally accept `--network` / `-n`.
-
 ## JSON output
 
 Piped output is JSON for every command — handy with `jq`:
@@ -132,7 +121,6 @@ trajrl skills list | jq '.skills[].slug'
 trajrl winner | jq '.current.winner.uid'
 trajrl queue --eligible-only | jq '.queue | length'
 trajrl validators | jq '.validators[] | {uid, name, version, weightTargets}'
-trajrl chain metagraph -u 11 | jq '.neurons[0:5]'
 ```
 
 ## Skills (in this repo)
@@ -151,10 +139,12 @@ v1.x shipped three binaries: `trajrl`, `trajectoryrl-inspector`, `bittensor-subn
 | `trajectoryrl-inspector analyze HOTKEY` | `trajrl analyze HOTKEY` |
 | `trajectoryrl-inspector logs ...` | `trajrl logs ...` |
 | `trajectoryrl-inspector submissions` | `trajrl submissions` |
-| `bittensor-subnet-inspector metagraph -u 11` | `trajrl chain metagraph --netuid 11` |
-| `bittensor-subnet-inspector emission -u 11` | `trajrl chain emission --netuid 11` |
+| `bittensor-subnet-inspector metagraph -u 11` | `btcli subnet metagraph --netuid 11` (no longer in trajrl) |
+| `bittensor-subnet-inspector emission -u 11` | `btcli subnet hyperparameters --netuid 11` (no longer in trajrl) |
 
 New v2.0 commands: `trajrl challenge`, `trajrl winner`, `trajrl queue` (v6 dual-seat winner-challenger).
+
+**v2.1 (this release):** removed `trajrl chain` group — it was redundant with `btcli` and pulled in the heavy `bittensor` SDK as a hard dependency. v2.1 has no chain-query commands; use `btcli subnet metagraph` / `btcli subnet hyperparameters` instead. Result: much lighter install (no substrate-interface, scalecodec, websockets, etc.).
 
 ## Links
 
