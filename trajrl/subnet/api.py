@@ -82,7 +82,25 @@ class TrajRLClient:
             headers={"Accept": "application/json"},
         )
 
-    # -- endpoints ---------------------------------------------------------
+    # -- live state (v6 dual-seat) -----------------------------------------
+
+    def challenge_state(self) -> dict[str, Any]:
+        """GET /api/challenge/state — in-flight epoch snapshot."""
+        return self._get("/api/challenge/state")
+
+    def winner_current(self) -> dict[str, Any]:
+        """GET /api/v2/winner/current — current seated winner + last finalized epoch."""
+        return self._get("/api/v2/winner/current")
+
+    def winner_history(self, limit: int | None = None) -> dict[str, Any]:
+        """GET /api/winner/history — winner-change events."""
+        return self._get("/api/winner/history", params=_compact({"limit": limit}))
+
+    def queue(self, limit: int | None = None) -> dict[str, Any]:
+        """GET /api/queue — pending eval queue."""
+        return self._get("/api/queue", params=_compact({"limit": limit}))
+
+    # -- validators / miners / packs ---------------------------------------
 
     def validators(self) -> dict[str, Any]:
         """GET /api/validators"""
@@ -131,6 +149,8 @@ class TrajRLClient:
         """GET /api/submissions"""
         return self._get("/api/submissions", params=_compact({"limit": limit}))
 
+    # -- eval logs ---------------------------------------------------------
+
     def eval_logs(
         self,
         *,
@@ -169,13 +189,7 @@ class TrajRLClient:
     ) -> dict[str, Any]:
         """Fetch the latest matching log archive, return metadata + raw bytes.
 
-        Generic retrieval path used by `trajrl logs --show`. Returns
-        ``{"log_entry": <metadata dict>, "archive": <raw tar.gz bytes>}``.
-
-        ``log_type`` is optional — omit to match any (miner or cycle).
-        At least one filter should be provided; otherwise this returns the
-        most recent archive for anyone on the network.
-
+        Returns ``{"log_entry": <metadata dict>, "archive": <raw tar.gz bytes>}``.
         Raises ``ValueError`` when no archive matches or download fails.
         """
         params: dict[str, Any] = {"limit": 5}
@@ -214,11 +228,7 @@ class TrajRLClient:
         *,
         eval_id: str | None = None,
     ) -> dict[str, Any]:
-        """Backwards-compat: fetch the latest cycle log text for a validator.
-
-        Returns ``{"log_entry": ..., "text": <validator.log text>}``.
-        Prefer ``log_archive()`` for new code.
-        """
+        """Fetch the latest cycle log text for a validator."""
         result = self.log_archive(
             validator=validator,
             log_type="cycle",

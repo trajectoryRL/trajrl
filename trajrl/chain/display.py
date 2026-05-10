@@ -1,4 +1,4 @@
-"""Rich formatters for bittensor-subnet-inspector TTY output."""
+"""Rich formatters for `trajrl chain` TTY output."""
 
 from __future__ import annotations
 

@@ -7,8 +7,8 @@ import re
 import statistics
 from pathlib import Path
 
-from trajectoryrl_inspector.api import TrajRLClient
-from trajectoryrl_inspector.display import (
+from trajrl.subnet.api import TrajRLClient
+from trajrl.subnet.display import (
     console,
     trunc,
     relative_time,

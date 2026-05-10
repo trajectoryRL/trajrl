@@ -59,10 +59,20 @@ def cost(v: float | None) -> str:
     return f"${v:.4f}"
 
 
-def score_fmt(v: float | None) -> str:
+def _to_float(v) -> float | None:
     if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def score_fmt(v) -> str:
+    f = _to_float(v)
+    if f is None:
         return "—"
-    return f"{v:.2f}"
+    return f"{f:.2f}"
 
 
 def size_fmt(b: int | None) -> str:
@@ -75,47 +85,129 @@ def size_fmt(b: int | None) -> str:
     return f"{b / (1024 * 1024):.1f}MB"
 
 
-# -- command displays ------------------------------------------------------
+# -- live state (v6 dual-seat) --------------------------------------------
 
 
-def display_status(validators_data: dict, submissions_data: dict) -> None:
-    valis = validators_data.get("validators", [])
-    subs = submissions_data.get("submissions", [])
+def display_challenge(data: dict) -> None:
+    """Render /api/challenge/state — in-flight epoch snapshot."""
+    epoch = data.get("current_epoch") or {}
+    submissions = data.get("current_submissions") or []
+    cfg = data.get("config") or {}
+    block = data.get("current_block")
 
-    now = datetime.now(timezone.utc)
-    active = 0
-    latest_eval: str | None = None
-    models: dict[str, int] = {}
-    for v in valis:
-        if v.get("lastSeen"):
-            try:
-                clean = v["lastSeen"].replace("+00", "+00:00").replace(" ", "T")
-                if not clean.endswith("Z") and "+" not in clean[10:]:
-                    clean += "+00:00"
-                dt = datetime.fromisoformat(clean.replace("Z", "+00:00"))
-                if (now - dt).total_seconds() < 3600:
-                    active += 1
-            except (ValueError, TypeError):
-                pass
-        le = v.get("lastEvalAt")
-        if le and (latest_eval is None or le > latest_eval):
-            latest_eval = le
-        m = v.get("llmModel")
-        if m:
-            models[m] = models.get(m, 0) + 1
-
-    passed = sum(1 for s in subs if s.get("evalStatus") == "passed")
-    failed = sum(1 for s in subs if s.get("evalStatus") == "failed")
-
-    model_str = ", ".join(f"{m} ({c})" for m, c in sorted(models.items(), key=lambda x: -x[1]))
-
-    lines = [
-        f"  Validators: {len(valis)} total, {active} active (seen <1h)",
-        f"  LLM Models: {model_str or '—'}",
-        f"  Latest Eval: {relative_time(latest_eval)}",
-        f"  Submissions: {passed} passed, {failed} failed (last batch)",
+    head = [
+        f"  Epoch: [bold]{epoch.get('id', '—')}[/]  "
+        f"({epoch.get('status', '—')})",
+        f"  Blocks: {epoch.get('start_block', '—')} → {epoch.get('end_block', '—')}  "
+        f"(now {block or '—'})",
+        f"  Challenger: {trunc(epoch.get('challenger_hotkey'))}  "
+        f"pack {trunc(epoch.get('challenger_pack_hash'), 10)}",
+        f"  Quorum: {cfg.get('quorum_fraction', '—')}  "
+        f"Margin: {cfg.get('winner_protection_margin', '—')}  "
+        f"Cooldown: {cfg.get('miner_cooldown_hours', '—')}h",
     ]
-    console.print(Panel("\n".join(lines), title="Network Status", border_style="cyan"))
+    console.print(Panel("\n".join(head), title="Live Challenge", border_style="cyan"))
+
+    if not submissions:
+        console.print("[dim]No validator submissions yet.[/]")
+        return
+
+    table = Table(title=f"Validator Submissions ({len(submissions)})")
+    table.add_column("Validator", style="cyan")
+    table.add_column("Challenger", justify="right")
+    table.add_column("Qual", justify="center")
+    table.add_column("Winner", justify="right")
+    table.add_column("W. Qual", justify="center")
+    table.add_column("Reported")
+    for s in submissions:
+        table.add_row(
+            s.get("validator_name") or trunc(s.get("validator_hotkey")),
+            score_fmt(s.get("challenger_score")),
+            qual(s.get("challenger_qualified")),
+            score_fmt(s.get("winner_score")),
+            qual(s.get("winner_qualified")),
+            relative_time(s.get("created_at")),
+        )
+    console.print(table)
+
+
+def display_winner(current_data: dict, history_data: dict, history_n: int) -> None:
+    """Render current seated winner + recent change events."""
+    w = (current_data or {}).get("winner") or {}
+    fin = (current_data or {}).get("finalized_epoch") or {}
+
+    head = [
+        f"  Winner: [bold]UID {w.get('uid', '—')}[/] {trunc(w.get('hotkey'))}",
+        f"  Pack:   {trunc(w.get('pack_hash'), 10)}  "
+        f"score={score_fmt(w.get('score'))}",
+        f"  Seated since epoch [bold]{w.get('since_epoch_id', '—')}[/]",
+    ]
+    if fin:
+        head.append(
+            f"  Last finalized: epoch {fin.get('challenge_epoch_id', '—')}  "
+            f"outcome={fin.get('outcome', '—')}  "
+            f"replaced={fin.get('winner_replaced', False)}  "
+            f"({relative_time(fin.get('finalized_at'))})"
+        )
+    console.print(
+        Panel("\n".join(head), title="Current Winner (Seated)", border_style="green")
+    )
+
+    history = (history_data or {}).get("history") or []
+    if history_n > 0:
+        history = history[:history_n]
+    if not history:
+        console.print("[dim]No winner-change events yet.[/]")
+        return
+
+    table = Table(title=f"Winner History ({len(history)})")
+    table.add_column("Epoch", justify="right")
+    table.add_column("UID", justify="right")
+    table.add_column("Winner", style="cyan")
+    table.add_column("Pack")
+    table.add_column("Score", justify="right")
+    table.add_column("Changed", justify="center")
+    table.add_column("Recorded")
+    for h in history:
+        table.add_row(
+            str(h.get("epoch_id", "—")),
+            str(h.get("winner_uid", "—")),
+            trunc(h.get("winner_hotkey")),
+            trunc(h.get("winner_pack_hash"), 10),
+            score_fmt(h.get("winner_score")),
+            qual(h.get("changed_from_prev")),
+            relative_time(h.get("recorded_at")),
+        )
+    console.print(table)
+
+
+def display_queue(data: dict, eligible_only: bool = False) -> None:
+    """Render /api/queue — pending eval queue."""
+    items = data.get("queue") or []
+    if eligible_only:
+        items = [q for q in items if q.get("eligible_now")]
+
+    label = "Eligible Now" if eligible_only else "Pending Eval Queue"
+    table = Table(title=f"{label} ({len(items)})")
+    table.add_column("Submission", style="dim")
+    table.add_column("UID", justify="right")
+    table.add_column("Miner", style="cyan")
+    table.add_column("Pack")
+    table.add_column("Eligible", justify="center")
+    table.add_column("Submitted")
+    for q in items:
+        table.add_row(
+            str(q.get("submission_id", "—")),
+            str(q.get("miner_uid", "—")),
+            trunc(q.get("miner_hotkey")),
+            trunc(q.get("pack_hash"), 10),
+            qual(q.get("eligible_now")),
+            relative_time(q.get("submitted_at")),
+        )
+    console.print(table)
+
+
+# -- existing surface ------------------------------------------------------
 
 
 def display_validators(data: dict) -> None:
@@ -123,18 +215,52 @@ def display_validators(data: dict) -> None:
     table = Table(title=f"Validators ({len(valis)})")
     table.add_column("Hotkey", style="cyan")
     table.add_column("UID", justify="right")
+    table.add_column("Stake", justify="right")
     table.add_column("Version")
     table.add_column("LLM Model")
     table.add_column("Last Eval")
     table.add_column("Last Seen")
     for v in valis:
+        stake = v.get("stake")
+        stake_str = f"{int(stake):,}" if isinstance(stake, (int, float)) else "—"
         table.add_row(
             trunc(v.get("hotkey")),
             str(v.get("uid", "—")),
+            stake_str,
             v.get("version") or "—",
             v.get("llmModel") or "—",
             relative_time(v.get("lastEvalAt")),
             relative_time(v.get("lastSeen")),
+        )
+    console.print(table)
+
+
+def display_validators_detail(data: dict) -> None:
+    """Detail view: also shows weightTargets and benchVersion."""
+    valis = data.get("validators", [])
+    table = Table(title=f"Validators — Detail ({len(valis)})")
+    table.add_column("Hotkey", style="cyan")
+    table.add_column("UID", justify="right")
+    table.add_column("Stake", justify="right")
+    table.add_column("Version")
+    table.add_column("LLM Model")
+    table.add_column("Bench")
+    table.add_column("Weights → UIDs")
+    table.add_column("Last Eval")
+    for v in valis:
+        stake = v.get("stake")
+        stake_str = f"{int(stake):,}" if isinstance(stake, (int, float)) else "—"
+        wt = v.get("weightTargets") or []
+        wt_str = ", ".join(str(x) for x in wt) if wt else "—"
+        table.add_row(
+            trunc(v.get("hotkey")),
+            str(v.get("uid", "—")),
+            stake_str,
+            v.get("version") or "—",
+            v.get("llmModel") or "—",
+            v.get("benchVersion") or "—",
+            wt_str,
+            relative_time(v.get("lastEvalAt")),
         )
     console.print(table)
 
@@ -357,14 +483,10 @@ def display_cycle_log(data: dict) -> None:
 
 
 def display_miner_log(log_entry: dict, archive_bytes: bytes) -> None:
-    """Display a miner log archive (S1: SKILL.md + JUDGE.md + per-episode files).
-
-    Shows the file tree, metadata.json summary, and per-episode evaluation
-    scores. Full transcripts are not printed (use --dump-to DIR for those).
-    """
+    """Display a miner log archive (S1: SKILL.md + JUDGE.md + per-episode files)."""
     import json
 
-    from trajectoryrl_inspector.api import (
+    from trajrl.subnet.api import (
         extract_archive_file,
         list_archive_members,
     )
@@ -382,7 +504,6 @@ def display_miner_log(log_entry: dict, archive_bytes: bytes) -> None:
     console.print(Panel("\n".join(lines), title="Miner Eval Log",
                         border_style="cyan"))
 
-    # File tree
     members = list_archive_members(archive_bytes)
     if members:
         tree_table = Table(title="Archive Contents", show_header=True)
@@ -392,7 +513,6 @@ def display_miner_log(log_entry: dict, archive_bytes: bytes) -> None:
             tree_table.add_row(name, size_fmt(size))
         console.print(tree_table)
 
-    # metadata.json summary (S1 evals have this)
     meta_text = extract_archive_file(archive_bytes, "metadata.json")
     if meta_text:
         try:
@@ -410,7 +530,6 @@ def display_miner_log(log_entry: dict, archive_bytes: bytes) -> None:
         except Exception:
             pass
 
-    # Per-episode evaluation.json criteria
     n_episodes = sum(
         1 for name, _ in members
         if name.startswith("episodes/episode_") and name.endswith("/evaluation.json")
@@ -419,7 +538,6 @@ def display_miner_log(log_entry: dict, archive_bytes: bytes) -> None:
         crit_table = Table(title=f"Per-Episode Criteria ({n_episodes} episodes)")
         crit_table.add_column("Episode", justify="right")
         crit_table.add_column("Quality", justify="right")
-        # Collect all criteria names across episodes
         eval_data = []
         for i in range(n_episodes):
             eval_text = extract_archive_file(
