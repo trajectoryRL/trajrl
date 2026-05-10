@@ -1,492 +1,582 @@
-"""Validator analysis: scores, weight distribution, scenario breakdown, miner leaderboard."""
+"""Subnet-level analyze: network throughput, competition health, score distribution,
+per-scenario breakdown, validator sync, recent winner changes.
+
+v2.2.0 reshape: under v6 winner-challenger, validators all evaluate the same
+challenger each epoch. Per-validator leaderboards from v5 don't translate; the
+useful unit is the network's eval pipeline as a whole.
+
+Data sources (all read-only HTTP):
+- /api/challenge/state — current epoch + config
+- /api/epoch/{id} — per-epoch full detail (submissions + scenario results)
+- /api/winner/history — winner-change events
+- /api/v2/winner/current — currently seated winner
+- /api/stats — network totals
+"""
 
 from __future__ import annotations
 
-import json
-import re
 import statistics
-from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+
+from rich import box
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 
 from trajrl.subnet.api import TrajRLClient
 from trajrl.subnet.display import (
     console,
     trunc,
     relative_time,
-    qual,
-    cost,
     score_fmt,
+    qual,
 )
-
-from rich.panel import Panel
 from rich.table import Table
-from rich import box
+
+
+# Approximate finney block time (seconds). Used only to translate --last 24h
+# into an epoch count; if the chain block time changes this is harmless drift.
+_BLOCK_TIME_SECS = 12.0
 
 
 def analyze(
     client: TrajRLClient,
-    validator_hotkey: str,
     *,
+    last_hours: float | None = 24.0,
+    epochs: int | None = None,
+    scenario: str | None = None,
     deep: bool = False,
-    deep_n: int = 5,
-    show_logs: bool = False,
-    dump: bool = False,
+    no_compare: bool = False,
 ) -> None:
-    """Run full validator analysis and print results."""
-    console.rule(f"[bold]Validator Report: {trunc(validator_hotkey)}[/]")
+    """Subnet-level network analysis over a window of recent epochs."""
+    state = client.challenge_state()
+    cfg = state.get("config") or {}
+    cur_epoch = int((state.get("current_epoch") or {}).get("id", 0))
+    epoch_blocks = int(cfg.get("epoch_length_blocks", 150))
 
-    if dump:
-        _dump_raw(client, validator_hotkey)
+    if epochs is not None:
+        n_epochs = max(1, int(epochs))
+    else:
+        secs = (last_hours or 24.0) * 3600
+        n_epochs = max(1, int(secs / (epoch_blocks * _BLOCK_TIME_SECS)))
+
+    # Pull the previous N finalized epochs (skip current — likely in_progress)
+    epoch_ids = list(range(max(1, cur_epoch - n_epochs), cur_epoch))
+    if not epoch_ids:
+        console.print("[yellow]No finalized epochs in window.[/]")
         return
 
-    scores_data = _analyze_scores(client, validator_hotkey)
-
-    if show_logs:
-        _fetch_eval_logs(client, validator_hotkey)
-
-    if deep:
-        _deep_miner_analysis(client, scores_data.get("entries", []), top_n=deep_n)
-
-    console.print()
-
-
-def pick_validator_interactive(client: TrajRLClient) -> str | None:
-    """List validators and prompt the user to pick one. Returns hotkey or None."""
-    data = client.validators()
-    validators = data.get("validators", [])
-    if not validators:
-        console.print("[yellow]No validators found.[/]")
-        return None
-
-    table = Table(title="Available Validators", box=box.ROUNDED)
-    table.add_column("#", justify="right", style="dim")
-    table.add_column("Hotkey", style="cyan")
-    table.add_column("UID", justify="right")
-    table.add_column("LLM Model")
-    table.add_column("Version")
-    table.add_column("Last Eval")
-    table.add_column("Last Seen")
-    for i, v in enumerate(validators, 1):
-        table.add_row(
-            str(i),
-            v.get("hotkey", "—"),
-            str(v.get("uid", "—")),
-            v.get("llmModel") or "—",
-            v.get("version") or "—",
-            relative_time(v.get("lastEvalAt")),
-            relative_time(v.get("lastSeen")),
-        )
-    console.print(table)
-
-    try:
-        choice = input("\nEnter validator # (or full hotkey): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        return None
-    if not choice:
-        return None
-    if choice.isdigit():
-        idx = int(choice) - 1
-        if 0 <= idx < len(validators):
-            return validators[idx]["hotkey"]
-        console.print("[red]Invalid index.[/]")
-        return None
-    return choice
-
-
-# -- internal helpers ------------------------------------------------------
-
-
-def _analyze_scores(client: TrajRLClient, validator_hotkey: str) -> dict:
-    data = client.scores_by_validator(validator_hotkey)
-    entries = data.get("entries", [])
-    if not entries:
-        console.print(f"[yellow]No score entries for validator {trunc(validator_hotkey)}.[/]")
-        return data
-
-    qualified = [e for e in entries if e.get("qualified")]
-    rejected = [e for e in entries if e.get("rejected")]
-    costs = [e["costUsd"] for e in entries if e.get("costUsd") is not None]
-    scores = [e["score"] for e in entries if e.get("score") is not None]
-    weights = [e["weight"] for e in entries if e.get("weight") is not None]
-
-    summary_lines = [
-        f"  Miners evaluated: {len(entries)}",
-        f"  Qualified: [green]{len(qualified)}[/]  |  Rejected: [red]{len(rejected)}[/]",
-        f"  Qualification rate: {len(qualified) / len(entries) * 100:.1f}%",
-    ]
-    if costs:
-        summary_lines.append(
-            f"  Cost — min: {min(costs):.4f}  avg: {statistics.mean(costs):.4f}  "
-            f"max: {max(costs):.4f}  median: {statistics.median(costs):.4f}"
-        )
-    if scores:
-        summary_lines.append(
-            f"  Score — min: {min(scores):.2f}  avg: {statistics.mean(scores):.2f}  "
-            f"max: {max(scores):.2f}  median: {statistics.median(scores):.2f}"
-        )
-    if weights:
-        nonzero_w = [w for w in weights if w > 0]
-        summary_lines.append(
-            f"  Weights — nonzero: {len(nonzero_w)}/{len(weights)}  top: {max(weights):.4f}"
-        )
-
-    console.print(Panel(
-        "\n".join(summary_lines),
-        title=f"Score Summary — {trunc(validator_hotkey)}",
-        border_style="cyan",
-    ))
-
-    _print_rejection_breakdown(rejected)
-    _print_weight_distribution(client, validator_hotkey)
-    _print_scenario_heatmap(entries)
-    _print_leaderboard(entries)
-    return data
-
-
-_RE_MINER_WEIGHT = re.compile(
-    r"Miner\s+(\d+)\s+\(([^)]+)\):\s+"
-    r"weight=([\d.]+),\s+cost=(\S+),\s+gate=(\w+),\s+score=([\d.]+)(.*)"
-)
-_RE_OWNER_WEIGHT = re.compile(r"Owner\s+UID\s+(\d+):\s+weight=([\d.]+)\s+\(burn\)")
-_RE_BURN = re.compile(r"Burn fraction:\s+([\d.]+%)")
-_RE_SET_OK = re.compile(r"(Weights set successfully|On-chain set_weights committed successfully)")
-_RE_FALLBACK = re.compile(r"(Fallback weights set|setting fallback weight)", re.I)
-
-
-def _parse_weight_results(log_text: str) -> dict:
-    miners: list[dict] = []
-    owner: dict | None = None
-    burn_fraction: str | None = None
-    success = False
-    fallback = False
-    in_section = False
-
-    for line in log_text.splitlines():
-        if "WEIGHT RESULTS" in line or "ON-CHAIN WEIGHT SUBMISSION" in line:
-            in_section = True
-            miners.clear()
-            owner = None
-            burn_fraction = None
-            continue
-        if in_section:
-            m = _RE_BURN.search(line)
-            if m:
-                burn_fraction = m.group(1)
-                continue
-            m = _RE_OWNER_WEIGHT.search(line)
-            if m:
-                owner = {"uid": int(m.group(1)), "weight": float(m.group(2))}
-                continue
-            m = _RE_MINER_WEIGHT.search(line)
-            if m:
-                cost_str = m.group(4).lstrip("$")
-                miners.append({
-                    "uid": int(m.group(1)), "hotkey": m.group(2),
-                    "weight": float(m.group(3)),
-                    "cost": float(cost_str) if cost_str != "n/a" else None,
-                    "gate": m.group(5), "score": float(m.group(6)),
-                    "marker": m.group(7).strip(),
-                })
-                continue
-            if "=====" in line:
-                continue
-            if line.strip() and not line.strip().startswith(("Miner", "Owner")):
-                in_section = False
-        if _RE_SET_OK.search(line):
-            success = True
-        if _RE_FALLBACK.search(line):
-            fallback = True
-
-    return {"miners": miners, "owner": owner, "burn_fraction": burn_fraction,
-            "success": success, "fallback": fallback}
-
-
-def _print_rejection_breakdown(rejected: list[dict]) -> None:
-    if not rejected:
-        return
-    stages: dict[str, int] = {}
-    for e in rejected:
-        stage = e.get("rejectionStage") or "unknown"
-        stages[stage] = stages.get(stage, 0) + 1
-    table = Table(title="Rejection Breakdown", box=box.SIMPLE_HEAVY)
-    table.add_column("Stage", style="red")
-    table.add_column("Count", justify="right")
-    for stage, cnt in sorted(stages.items(), key=lambda x: -x[1]):
-        table.add_row(stage, str(cnt))
-    console.print(table)
-
-
-def _print_weight_distribution(client: TrajRLClient, validator_hotkey: str) -> None:
-    console.print("[dim]Fetching cycle log...[/]")
-    try:
-        result = client.cycle_log(validator_hotkey)
-    except ValueError as exc:
-        console.print(f"[yellow]{exc}[/]")
-        return
-
-    log_entry = result["log_entry"]
-    console.print(
-        f"[dim]Cycle log {log_entry.get('evalId', '?')} "
-        f"({relative_time(log_entry.get('createdAt'))})[/]"
+    console.rule(
+        f"[bold]Subnet Analysis — last {n_epochs} epochs (≈{n_epochs * epoch_blocks * _BLOCK_TIME_SECS / 3600:.1f}h)[/]"
     )
 
-    wr = _parse_weight_results(result["text"])
-    miners = wr["miners"]
-
-    if not miners and not wr["owner"]:
-        label = "Fallback weights were set (no qualified miners)." if wr["fallback"] \
-            else "No ON-CHAIN WEIGHT SUBMISSION found in cycle log."
-        console.print(Panel(f"  [yellow]{label}[/]",
-                            title="Set-Weights (from cycle log)", border_style="yellow"))
+    epoch_data = _fetch_epochs_parallel(client, epoch_ids)
+    epochs_with_data = [e for e in epoch_data if e and e.get("epoch")]
+    if not epochs_with_data:
+        console.print("[yellow]No epoch data returned. The endpoint may be down.[/]")
         return
 
-    all_weights = [m["weight"] for m in miners] + ([wr["owner"]["weight"]] if wr["owner"] else [])
-    total_weight = sum(all_weights) or 1.0
+    history = client.winner_history(limit=50).get("history") or []
+    current_winner = (client.winner_current() or {}).get("winner") or {}
+    stats = {}
+    try:
+        stats = client.stats() or {}
+    except Exception:
+        pass
 
-    summary_lines = [
-        f"  Eval ID: [bold]{log_entry.get('evalId', '?')}[/]  "
-        f"({relative_time(log_entry.get('createdAt'))})",
+    if scenario:
+        console.print(f"[dim]Filter: scenario = [bold]{scenario}[/][/]\n")
+
+    _print_throughput(epochs_with_data, n_epochs)
+    _print_competition_health(epochs_with_data, history, current_winner, cur_epoch)
+    _print_score_distribution(epochs_with_data)
+    _print_per_scenario(epochs_with_data, scenario_filter=scenario)
+    _print_top_challengers(epochs_with_data)
+    _print_rejection_breakdown(epochs_with_data)
+    _print_miner_pool(epochs_with_data)
+    if not no_compare:
+        _print_validator_sync(epochs_with_data)
+    _print_recent_winner_changes(history, n=10)
+    _print_stats_footer(stats)
+
+    if deep:
+        _drill_into_logs(client, epochs_with_data)
+
+
+# -- fetching --------------------------------------------------------------
+
+
+def _fetch_epochs_parallel(client: TrajRLClient, epoch_ids: list[int]) -> list[dict]:
+    """Fetch epoch detail in parallel with a Rich progress bar."""
+    results: list[dict] = [None] * len(epoch_ids)  # type: ignore[list-item]
+
+    def _fetch(i_id: tuple[int, int]) -> tuple[int, dict | None]:
+        i, ep_id = i_id
+        try:
+            return i, client.epoch(ep_id)
+        except Exception:
+            return i, None
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[dim]Fetching epoch detail[/]"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        transient=True,
+    ) as prog:
+        task = prog.add_task("epochs", total=len(epoch_ids))
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for i, data in ex.map(_fetch, list(enumerate(epoch_ids))):
+                results[i] = data  # type: ignore[assignment]
+                prog.advance(task)
+
+    return [r for r in results if r is not None]
+
+
+# -- sub-reports -----------------------------------------------------------
+
+
+def _print_throughput(epochs: list[dict], window_size: int) -> None:
+    finalized = [e for e in epochs if (e["epoch"] or {}).get("status") == "finalized"]
+    in_progress = [e for e in epochs if (e["epoch"] or {}).get("status") == "in_progress"]
+    total_subs = sum(len(e.get("submissions") or []) for e in epochs)
+    rejected_subs = 0
+    validators = set()
+    for e in epochs:
+        for s in e.get("submissions") or []:
+            validators.add(s.get("validator_hotkey"))
+            ch = s.get("challenger") or {}
+            if ch.get("rejected"):
+                rejected_subs += 1
+
+    hours = window_size * 150 * _BLOCK_TIME_SECS / 3600  # approx
+    rej_rate = rejected_subs / total_subs * 100 if total_subs else 0
+
+    lines = [
+        f"  Epochs in window: {len(epochs)} ({len(finalized)} finalized, {len(in_progress)} in_progress)",
+        f"  Decisions submitted: [bold]{total_subs}[/] ({total_subs / hours:.1f}/h)",
+        f"  Validators contributing: {len(validators)}",
+        f"  Rejection rate: [{'red' if rej_rate > 30 else 'yellow' if rej_rate > 10 else 'green'}]"
+        f"{rej_rate:.1f}%[/]  ({rejected_subs}/{total_subs})",
     ]
-    if wr["burn_fraction"]:
-        summary_lines.append(f"  Burn fraction: {wr['burn_fraction']}")
-    if wr["owner"]:
-        summary_lines.append(
-            f"  Owner UID {wr['owner']['uid']}: weight={wr['owner']['weight']:.4f} (burn)"
-        )
-    nonzero = [m["weight"] for m in miners if m["weight"] > 0]
-    summary_lines.append(f"  Miners: {len(miners)} total, [bold green]{len(nonzero)}[/] with weight > 0")
-    winner = next((m for m in miners if "ON-CHAIN WINNER" in m.get("marker", "")), None)
-    if winner:
-        summary_lines.append(
-            f"  [bold yellow]Winner:[/] UID {winner['uid']} ({winner['hotkey']})  "
-            f"weight={winner['weight']:.4f}  cost=${winner['cost']:.4f}  gate={winner['gate']}"
-        )
-    passed = sum(1 for m in miners if m["gate"] == "PASS")
-    failed = sum(1 for m in miners if m["gate"] == "FAIL")
-    summary_lines.append(f"  Gate: [green]{passed} PASS[/]  |  [red]{failed} FAIL[/]")
-    if wr["success"]:
-        summary_lines.append("  Status: [green]Weights set successfully[/]")
-    elif wr["fallback"]:
-        summary_lines.append("  Status: [yellow]Fallback weights used[/]")
+    console.print(Panel("\n".join(lines), title="Throughput", border_style="cyan"))
 
-    console.print(Panel("\n".join(summary_lines),
-                        title="Set-Weights (from cycle log)", border_style="yellow"))
 
-    if not miners:
+def _print_competition_health(
+    epochs: list[dict], history: list[dict], current_winner: dict, cur_epoch: int
+) -> None:
+    finalized = [e for e in epochs if (e["epoch"] or {}).get("status") == "finalized"]
+    distinct_packs = {(e["epoch"] or {}).get("challenger_pack_hash") for e in finalized}
+    distinct_packs.discard(None)
+    distinct_miners = {(e["epoch"] or {}).get("challenger_hotkey") for e in finalized}
+    distinct_miners.discard(None)
+
+    outcomes: dict[str, int] = {}
+    for e in finalized:
+        out = (e["epoch"] or {}).get("outcome") or "unknown"
+        outcomes[out] = outcomes.get(out, 0) + 1
+    held = outcomes.get("winner_held", 0)
+    replaced = outcomes.get("winner_replaced", 0)
+    decided = held + replaced
+    replace_rate = replaced / decided * 100 if decided else 0
+
+    distinct_winners = {h.get("winner_hotkey") for h in history}
+    distinct_winners.discard(None)
+
+    since = current_winner.get("since_epoch_id")
+    tenure = (cur_epoch - int(since)) if since else None
+
+    # Mean inter-replacement gap from history (epoch deltas between consecutive changes)
+    epoch_changes = sorted(
+        {int(h["epoch_id"]) for h in history if h.get("changed_from_prev")}
+    )
+    if len(epoch_changes) >= 2:
+        gaps = [
+            epoch_changes[i + 1] - epoch_changes[i]
+            for i in range(len(epoch_changes) - 1)
+        ]
+        mean_gap = statistics.mean(gaps)
+    else:
+        mean_gap = None
+
+    lines = [
+        f"  Distinct challenger packs: [bold]{len(distinct_packs)}[/]  miners: [bold]{len(distinct_miners)}[/]",
+        f"  Outcomes: [green]{held} held[/]  [yellow]{replaced} replaced[/]  "
+        f"replace_rate=[{'green' if replace_rate < 10 else 'yellow' if replace_rate < 30 else 'red'}]{replace_rate:.1f}%[/]",
+        f"  Distinct winners (history+current): [bold]{len(distinct_winners) + (1 if current_winner.get('hotkey') and current_winner.get('hotkey') not in distinct_winners else 0)}[/]",
+        f"  Current winner tenure: [bold]{tenure if tenure is not None else '?'} epochs[/]"
+        + (f"  ({trunc(current_winner.get('hotkey'))} UID {current_winner.get('uid','?')})" if current_winner else ""),
+        f"  Mean inter-replacement gap: {f'{mean_gap:.1f} epochs' if mean_gap is not None else 'n/a (need ≥2 changes)'}",
+    ]
+    console.print(Panel("\n".join(lines), title="Competition Health", border_style="cyan"))
+
+
+def _print_score_distribution(epochs: list[dict]) -> None:
+    scores = []
+    for e in epochs:
+        ep = e.get("epoch") or {}
+        if ep.get("status") != "finalized":
+            continue
+        s = ep.get("consensus_score")
+        try:
+            scores.append(float(s))
+        except (TypeError, ValueError):
+            pass
+
+    if not scores:
         return
 
-    sorted_miners = sorted(miners, key=lambda m: m["weight"], reverse=True)
-    max_w = max(m["weight"] for m in sorted_miners) or 1
+    scores_sorted = sorted(scores)
+    p = lambda q: scores_sorted[min(len(scores_sorted) - 1, int(q * (len(scores_sorted) - 1)))]
+    mean = statistics.mean(scores)
+    qualified = sum(1 for s in scores if s > 0)
 
-    table = Table(title="Weight Distribution", box=box.ROUNDED)
-    table.add_column("#", justify="right", style="dim")
-    table.add_column("UID", justify="right")
-    table.add_column("Hotkey", style="cyan")
-    table.add_column("Weight", justify="right", style="bold yellow")
-    table.add_column("Share %", justify="right")
-    table.add_column("Bar", min_width=20)
-    table.add_column("Gate", justify="center")
-    table.add_column("Cost", justify="right")
-    table.add_column("Score", justify="right")
-    table.add_column("Note")
+    # 5-bucket histogram
+    buckets = [(0, 0.5), (0.5, 1.0), (1.0, 2.0), (2.0, 3.0), (3.0, 99.0)]
+    counts = [
+        sum(1 for s in scores if lo <= s < hi)
+        for lo, hi in buckets
+    ]
+    max_c = max(counts) or 1
 
-    for i, m in enumerate(sorted_miners, 1):
-        w = m["weight"]
-        share = w / total_weight * 100
-        bar_len = int(w / max_w * 20)
-        bar = "[yellow]" + "█" * bar_len + "[/]" + "░" * (20 - bar_len)
-        gate_style = "green" if m["gate"] == "PASS" else "red"
-        cost_str = f"${m['cost']:.4f}" if m["cost"] is not None else "n/a"
-        marker = m.get("marker", "")
-        note_style = "bold yellow" if "ON-CHAIN WINNER" in marker else "dim"
-        table.add_row(
-            str(i), str(m["uid"]), m["hotkey"],
-            f"{w:.4f}", f"{share:.1f}%", bar,
-            f"[{gate_style}]{m['gate']}[/]", cost_str, f"{m['score']:.3f}",
-            f"[{note_style}]{marker}[/]" if marker else "",
-        )
-
-    if wr["owner"]:
-        o = wr["owner"]
-        share = o["weight"] / total_weight * 100
-        bar_len = int(o["weight"] / max_w * 20)
-        bar = "[red]" + "█" * bar_len + "[/]" + "░" * (20 - bar_len)
-        table.add_row("—", str(o["uid"]), "[dim]owner (burn)[/]",
-                      f"{o['weight']:.4f}", f"{share:.1f}%", bar, "—", "—", "—", "[red]BURN[/]")
-    console.print(table)
-
-    zero_pass = [m for m in miners if m["weight"] == 0 and m["gate"] == "PASS"]
-    if zero_pass:
-        t2 = Table(title=f"PASS but Zero Weight ({len(zero_pass)} miners)", box=box.SIMPLE)
-        t2.add_column("UID", justify="right")
-        t2.add_column("Hotkey", style="cyan")
-        t2.add_column("Cost", justify="right")
-        t2.add_column("Score", justify="right")
-        for m in sorted(zero_pass, key=lambda x: x.get("cost") or 999):
-            cost_str = f"${m['cost']:.4f}" if m["cost"] is not None else "n/a"
-            t2.add_row(str(m["uid"]), m["hotkey"], cost_str, f"{m['score']:.3f}")
-        console.print(t2)
+    lines = [
+        f"  N: {len(scores)}  Qualified (>0): {qualified} ({qualified/len(scores)*100:.0f}%)",
+        f"  Mean: {mean:.3f}  p50: {p(0.5):.3f}  p75: {p(0.75):.3f}  p90: {p(0.9):.3f}  p99: {p(0.99):.3f}",
+        "",
+        "  Histogram (consensus_score):",
+    ]
+    for (lo, hi), c in zip(buckets, counts):
+        bar_len = int(c / max_c * 30)
+        bar = "[cyan]" + "█" * bar_len + "[/]" + "·" * (30 - bar_len)
+        label = f"{lo:.1f}–{hi:.1f}" if hi < 99 else f"{lo:.1f}+"
+        lines.append(f"  {label:>9}  {bar}  {c}")
+    console.print(Panel("\n".join(lines), title="Score Distribution", border_style="cyan"))
 
 
-def _print_scenario_heatmap(entries: list[dict]) -> None:
-    scenario_stats: dict[str, dict] = {}
-    for e in entries:
-        for name, info in (e.get("scenarioScores") or {}).items():
-            if not isinstance(info, dict):
-                continue
-            if name not in scenario_stats:
-                scenario_stats[name] = {"qual": 0, "total": 0, "costs": [], "scores": []}
-            scenario_stats[name]["total"] += 1
-            if info.get("qualified"):
-                scenario_stats[name]["qual"] += 1
-            if info.get("cost") is not None:
-                scenario_stats[name]["costs"].append(info["cost"])
-            if info.get("score") is not None:
-                scenario_stats[name]["scores"].append(info["score"])
-    if not scenario_stats:
+def _print_per_scenario(epochs: list[dict], scenario_filter: str | None = None) -> None:
+    """Aggregate per-scenario stats across all submissions in the window."""
+    sc_stats: dict[str, dict] = {}
+    for e in epochs:
+        for s in e.get("submissions") or []:
+            sr = (s.get("challenger") or {}).get("scenario_results") or {}
+            for name, info in sr.items():
+                if scenario_filter and name != scenario_filter:
+                    continue
+                if not isinstance(info, dict):
+                    continue
+                d = sc_stats.setdefault(
+                    name, {"evals": 0, "qualified": 0, "scores": [], "best_pack": None, "best_score": -1.0}
+                )
+                d["evals"] += 1
+                if info.get("qualified"):
+                    d["qualified"] += 1
+                sc = info.get("score")
+                try:
+                    sc_f = float(sc)
+                    d["scores"].append(sc_f)
+                    if sc_f > d["best_score"]:
+                        d["best_score"] = sc_f
+                        d["best_pack"] = (e["epoch"] or {}).get("challenger_pack_hash")
+                except (TypeError, ValueError):
+                    pass
+
+    if not sc_stats:
+        if scenario_filter:
+            console.print(
+                f"[yellow]No data for scenario '{scenario_filter}' in this window.[/]"
+            )
         return
 
-    table = Table(title="Scenario Analysis", box=box.ROUNDED)
+    title = (
+        f"Per-Scenario — {scenario_filter}"
+        if scenario_filter
+        else f"Per-Scenario ({len(sc_stats)} scenarios)"
+    )
+    table = Table(title=title, box=box.ROUNDED)
     table.add_column("Scenario")
+    table.add_column("Evals", justify="right")
     table.add_column("Pass Rate", justify="right")
-    table.add_column("Avg Cost", justify="right")
-    table.add_column("Avg Score", justify="right")
-    table.add_column("Miners", justify="right")
-    for name, s in sorted(scenario_stats.items()):
-        rate = s["qual"] / s["total"] * 100 if s["total"] else 0
+    table.add_column("Mean Score", justify="right")
+    table.add_column("Best Pack")
+    table.add_column("Best Score", justify="right")
+    for name, d in sorted(sc_stats.items()):
+        rate = d["qualified"] / d["evals"] * 100 if d["evals"] else 0
         rate_style = "green" if rate >= 50 else "yellow" if rate >= 25 else "red"
-        avg_cost = statistics.mean(s["costs"]) if s["costs"] else None
-        avg_score = statistics.mean(s["scores"]) if s["scores"] else None
+        mean_s = statistics.mean(d["scores"]) if d["scores"] else 0
         table.add_row(
             name,
-            f"[{rate_style}]{rate:.0f}%[/] ({s['qual']}/{s['total']})",
-            cost(avg_cost), score_fmt(avg_score), str(s["total"]),
+            str(d["evals"]),
+            f"[{rate_style}]{rate:.0f}%[/] ({d['qualified']}/{d['evals']})",
+            f"{mean_s:.3f}",
+            trunc(d["best_pack"], 10) if d["best_pack"] else "—",
+            f"{d['best_score']:.3f}" if d["best_score"] >= 0 else "—",
         )
     console.print(table)
 
 
-def _print_leaderboard(entries: list[dict]) -> None:
-    ranked = sorted(
-        [e for e in entries if e.get("score") is not None],
-        key=lambda e: e["score"], reverse=True,
-    )[:15]
+def _print_top_challengers(epochs: list[dict], top_n: int = 10) -> None:
+    by_pack: dict[str, dict] = {}
+    for e in epochs:
+        ep = e.get("epoch") or {}
+        ph = ep.get("challenger_pack_hash")
+        if not ph:
+            continue
+        try:
+            score = float(ep.get("consensus_score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        existing = by_pack.get(ph)
+        if existing is None or score > existing["score"]:
+            by_pack[ph] = {
+                "score": score,
+                "miner_hotkey": ep.get("challenger_hotkey"),
+                "outcome": ep.get("outcome"),
+                "epoch_id": ep.get("id"),
+                "qualified": ep.get("consensus_qualified"),
+            }
+
+    ranked = sorted(by_pack.items(), key=lambda kv: kv[1]["score"], reverse=True)[:top_n]
     if not ranked:
         return
-    table = Table(title="Top 15 Miners by Score", box=box.ROUNDED)
+
+    table = Table(title=f"Top {len(ranked)} Challenger Packs (by best consensus_score)", box=box.ROUNDED)
     table.add_column("#", justify="right", style="dim")
-    table.add_column("Miner", style="cyan")
-    table.add_column("UID", justify="right")
-    table.add_column("Qual", justify="center")
-    table.add_column("Cost", justify="right")
+    table.add_column("Pack", style="cyan")
+    table.add_column("Miner")
     table.add_column("Score", justify="right", style="bold")
-    table.add_column("Weight", justify="right")
-    for i, e in enumerate(ranked, 1):
-        table.add_row(
-            str(i), trunc(e.get("minerHotkey")),
-            str(e.get("uid") if e.get("uid") is not None else "—"),
-            qual(e.get("qualified")), cost(e.get("costUsd")),
-            score_fmt(e.get("score")), score_fmt(e.get("weight")),
-        )
-    console.print(table)
-
-
-def _deep_miner_analysis(client: TrajRLClient, entries: list[dict], top_n: int = 5) -> None:
-    ranked = sorted(
-        [e for e in entries if e.get("minerHotkey")],
-        key=lambda e: e.get("score") or 0, reverse=True,
-    )[:top_n]
-    for e in ranked:
-        hotkey = e["minerHotkey"]
-        console.rule(f"[bold cyan]Miner {trunc(hotkey)}[/]")
-        try:
-            miner_data = client.miner(hotkey)
-        except Exception as exc:
-            console.print(f"  [red]Failed to fetch miner data: {exc}[/]")
-            continue
-        _print_miner_panel(miner_data)
-        _print_miner_validators(miner_data)
-        _print_miner_submissions(miner_data)
-
-
-def _print_miner_panel(data: dict) -> None:
-    lines = [
-        f"  Rank: {data.get('rank', '—')}  |  Score: {score_fmt(data.get('score'))}  |  Cost: {cost(data.get('totalCostUsd'))}",
-        f"  Qualified: {'yes' if data.get('qualified') else 'no'}  |  Active: {'yes' if data.get('isActive') else 'no'}",
-        f"  Pack: {trunc(data.get('packHash'), 10)}  |  Winner: {'yes' if data.get('isWinner') else 'no'}",
-    ]
-    ban = data.get("banRecord")
-    if ban and ban.get("failedPackCount", 0) > 0:
-        lines.append(f"  [red]Failed packs: {ban['failedPackCount']}[/]")
-    console.print(Panel("\n".join(lines), border_style="dim"))
-
-
-def _print_miner_validators(data: dict) -> None:
-    validators = data.get("validators", [])
-    if not validators:
-        return
-    table = Table(title="Per-Validator Results", box=box.SIMPLE)
-    table.add_column("Validator", style="cyan")
     table.add_column("Qual", justify="center")
-    table.add_column("Cost", justify="right")
+    table.add_column("Outcome")
+    table.add_column("Epoch", justify="right")
+    for i, (ph, d) in enumerate(ranked, 1):
+        outcome = d["outcome"] or "—"
+        out_style = "yellow" if outcome == "winner_replaced" else "dim"
+        table.add_row(
+            str(i),
+            trunc(ph, 10),
+            trunc(d["miner_hotkey"]),
+            f"{d['score']:.3f}",
+            qual(d["qualified"]),
+            f"[{out_style}]{outcome}[/]",
+            str(d["epoch_id"]),
+        )
+    console.print(table)
+
+
+def _print_rejection_breakdown(epochs: list[dict]) -> None:
+    rejections: list[tuple[str, str | None]] = []
+    for e in epochs:
+        for s in e.get("submissions") or []:
+            ch = s.get("challenger") or {}
+            if ch.get("rejected"):
+                rejections.append((s.get("validator_hotkey", ""), ch.get("rejection_detail")))
+
+    if not rejections:
+        return
+
+    by_validator: dict[str, int] = {}
+    by_reason: dict[str, int] = {}
+    sample_by_reason: dict[str, str] = {}
+    for vh, detail in rejections:
+        by_validator[vh] = by_validator.get(vh, 0) + 1
+        bucket = _bucket_rejection(detail)
+        by_reason[bucket] = by_reason.get(bucket, 0) + 1
+        if bucket not in sample_by_reason and detail:
+            sample_by_reason[bucket] = detail[:80]
+
+    table = Table(title=f"Rejection Breakdown ({len(rejections)} total)", box=box.SIMPLE_HEAVY)
+    table.add_column("Reason", style="red")
+    table.add_column("Count", justify="right")
+    table.add_column("Sample detail", style="dim")
+    for reason, cnt in sorted(by_reason.items(), key=lambda kv: -kv[1]):
+        table.add_row(reason, str(cnt), sample_by_reason.get(reason, "—"))
+    console.print(table)
+
+
+def _bucket_rejection(detail: str | None) -> str:
+    """Coarse-grained reason classifier from rejection_detail text."""
+    if not detail:
+        return "unspecified"
+    d = detail.lower()
+    if "copy" in d or "owned by" in d:
+        return "integrity:copy"
+    if "schema" in d:
+        return "schema_validation"
+    if "timeout" in d:
+        return "timeout"
+    if "fetch" in d or "download" in d or "404" in d:
+        return "pack_fetch"
+    if "size" in d:
+        return "pack_size"
+    if "eval_error" in d or "eval error" in d:
+        return "eval_error"
+    if "judge" in d:
+        return "judge_failure"
+    return "other"
+
+
+def _print_miner_pool(epochs: list[dict]) -> None:
+    distinct_miners: dict[str, int] = {}
+    distinct_packs_per_miner: dict[str, set] = {}
+    for e in epochs:
+        ep = e.get("epoch") or {}
+        mh = ep.get("challenger_hotkey")
+        ph = ep.get("challenger_pack_hash")
+        if mh:
+            distinct_miners[mh] = distinct_miners.get(mh, 0) + 1
+        if mh and ph:
+            distinct_packs_per_miner.setdefault(mh, set()).add(ph)
+
+    if not distinct_miners:
+        return
+
+    top = sorted(distinct_miners.items(), key=lambda kv: -kv[1])[:10]
+    lines = [
+        f"  Distinct miners challenging: [bold]{len(distinct_miners)}[/]",
+        f"  Distinct packs across pool:  [bold]{sum(len(v) for v in distinct_packs_per_miner.values())}[/]",
+        f"  Mean packs per miner:        {sum(len(v) for v in distinct_packs_per_miner.values()) / len(distinct_packs_per_miner):.1f}",
+        "",
+        "  Top 10 most-active miners:",
+    ]
+    for mh, cnt in top:
+        lines.append(
+            f"    {trunc(mh)}  {cnt} attempts  ({len(distinct_packs_per_miner.get(mh, set()))} distinct packs)"
+        )
+    console.print(Panel("\n".join(lines), title="Miner Pool", border_style="cyan"))
+
+
+def _print_validator_sync(epochs: list[dict]) -> None:
+    """For each validator, compute mean |my_score - peer_mean| across shared epochs."""
+    finalized = [e for e in epochs if (e["epoch"] or {}).get("status") == "finalized"]
+    deltas: dict[str, list[float]] = {}
+    decisions: dict[str, int] = {}
+    rejection_count: dict[str, int] = {}
+
+    for e in finalized:
+        subs = e.get("submissions") or []
+        if len(subs) < 2:
+            continue
+        # gather (validator → score) for this epoch
+        scores_this_epoch: dict[str, float] = {}
+        for s in subs:
+            vh = s.get("validator_hotkey")
+            ch = s.get("challenger") or {}
+            decisions[vh] = decisions.get(vh, 0) + 1
+            if ch.get("rejected"):
+                rejection_count[vh] = rejection_count.get(vh, 0) + 1
+            try:
+                scores_this_epoch[vh] = float(ch.get("score") or 0)
+            except (TypeError, ValueError):
+                continue
+        # for each validator, compute |their_score - mean_of_peers|
+        for vh, my_score in scores_this_epoch.items():
+            peers = [v for k, v in scores_this_epoch.items() if k != vh]
+            if not peers:
+                continue
+            peer_mean = sum(peers) / len(peers)
+            deltas.setdefault(vh, []).append(abs(my_score - peer_mean))
+
+    if not deltas:
+        return
+
+    # Outlier = mean Δ exceeds 1.5× the network median Δ. Adapts to overall variance.
+    all_means = [statistics.mean(ds) for ds in deltas.values()]
+    network_median = statistics.median(all_means) if all_means else 0
+    threshold = max(0.3, network_median * 1.5)
+
+    table = Table(
+        title=f"Validator Sync (vs peer mean) — outlier threshold Δ > {threshold:.2f}",
+        box=box.ROUNDED,
+    )
+    table.add_column("Validator", style="cyan")
+    table.add_column("Decisions", justify="right")
+    table.add_column("Rejected", justify="right")
+    table.add_column("Mean Δ", justify="right")
+    table.add_column("Status", justify="center")
+    for vh, ds in sorted(deltas.items(), key=lambda kv: -statistics.mean(kv[1])):
+        mean_d = statistics.mean(ds)
+        is_outlier = mean_d > threshold
+        table.add_row(
+            trunc(vh),
+            str(decisions.get(vh, 0)),
+            str(rejection_count.get(vh, 0)),
+            f"{mean_d:.3f}",
+            "[red]outlier[/]" if is_outlier else "[green]ok[/]",
+        )
+    console.print(table)
+
+
+def _print_recent_winner_changes(history: list[dict], n: int = 10) -> None:
+    if not history:
+        return
+    table = Table(title=f"Recent Winner Changes (last {min(n, len(history))})", box=box.SIMPLE)
+    table.add_column("Epoch", justify="right")
+    table.add_column("UID", justify="right")
+    table.add_column("Winner", style="cyan")
+    table.add_column("Pack")
     table.add_column("Score", justify="right")
-    table.add_column("Block", justify="right")
-    table.add_column("Reported")
-    for v in validators:
+    table.add_column("Recorded")
+    for h in history[:n]:
         table.add_row(
-            trunc(v.get("hotkey")), qual(v.get("qualified")),
-            cost(v.get("costUsd")), score_fmt(v.get("score")),
-            str(v.get("blockHeight") or "—"), relative_time(v.get("createdAt")),
+            str(h.get("epoch_id", "—")),
+            str(h.get("winner_uid", "—")),
+            trunc(h.get("winner_hotkey")),
+            trunc(h.get("winner_pack_hash"), 10),
+            score_fmt(h.get("winner_score")),
+            relative_time(h.get("recorded_at")),
         )
     console.print(table)
 
 
-def _print_miner_submissions(data: dict) -> None:
-    subs = data.get("recentSubmissions", [])
-    if not subs:
+def _print_stats_footer(stats: dict) -> None:
+    if not stats:
         return
-    table = Table(title="Recent Submissions", box=box.SIMPLE)
-    table.add_column("Pack Hash", style="cyan")
-    table.add_column("Status")
-    table.add_column("Reason", max_width=60)
-    table.add_column("Submitted")
-    for s in subs:
-        status = s.get("evalStatus", "—")
-        style = "green" if status == "passed" else "red"
-        table.add_row(
-            trunc(s.get("packHash"), 10), f"[{style}]{status}[/]",
-            (s.get("evalReason") or "—")[:60], relative_time(s.get("submittedAt")),
-        )
-    console.print(table)
+    parts = []
+    if stats.get("totalReports"):
+        parts.append(f"reports={stats['totalReports']}")
+    if stats.get("totalCostUsd") is not None:
+        parts.append(f"cost=${float(stats['totalCostUsd']):,.2f}")
+    if stats.get("totalLlmCalls"):
+        parts.append(f"llm_calls={stats['totalLlmCalls']}")
+    if stats.get("totalTokens"):
+        parts.append(f"tokens={int(stats['totalTokens']):,}")
+    if parts:
+        console.print(f"[dim]Network totals (all-time): {'  '.join(parts)}[/]")
 
 
-def _fetch_eval_logs(client: TrajRLClient, validator_hotkey: str, limit: int = 20) -> None:
-    data = client.eval_logs(validator=validator_hotkey, limit=limit)
-    logs = data.get("logs", [])
-    if not logs:
-        console.print("[dim]No eval logs found.[/]")
+def _drill_into_logs(client: TrajRLClient, epochs: list[dict], top_n: int = 3) -> None:
+    """For --deep: list eval logs for the top-scoring challenger packs in the window."""
+    by_pack: dict[str, dict] = {}
+    for e in epochs:
+        ep = e.get("epoch") or {}
+        ph = ep.get("challenger_pack_hash")
+        if not ph:
+            continue
+        try:
+            score = float(ep.get("consensus_score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        if ph not in by_pack or score > by_pack[ph]["score"]:
+            by_pack[ph] = {"score": score, "epoch_id": ep.get("id")}
+
+    top = sorted(by_pack.items(), key=lambda kv: -kv[1]["score"])[:top_n]
+    if not top:
         return
-    table = Table(title=f"Eval Logs — {trunc(validator_hotkey)}", box=box.ROUNDED)
-    table.add_column("Eval ID")
-    table.add_column("Type")
-    table.add_column("Miner", style="cyan")
-    table.add_column("Pack Hash")
-    table.add_column("Created")
-    for log in logs:
-        table.add_row(
-            log.get("evalId", "—"), log.get("logType", "—"),
-            trunc(log.get("minerHotkey")), trunc(log.get("packHash"), 10),
-            relative_time(log.get("createdAt")),
-        )
-    console.print(table)
 
-
-def _dump_raw(client: TrajRLClient, validator_hotkey: str) -> None:
-    out: dict = {}
-    console.print("[dim]Fetching validators...[/]")
-    out["validators"] = client.validators()
-    console.print("[dim]Fetching scores...[/]")
-    out["scores"] = client.scores_by_validator(validator_hotkey)
-    console.print("[dim]Fetching eval logs...[/]")
-    out["eval_logs"] = client.eval_logs(validator=validator_hotkey, limit=100)
-    outpath = Path(f"dump_{trunc(validator_hotkey, 8).replace('…', '_')}.json")
-    outpath.write_text(json.dumps(out, indent=2, ensure_ascii=False))
-    console.print(f"[green]Dumped to {outpath}[/]")
+    console.rule(f"[bold]--deep: eval logs for top {len(top)} packs[/]")
+    for ph, info in top:
+        console.print(f"\n[cyan]Pack[/] {ph[:16]}…  best_score={info['score']:.3f}  epoch={info['epoch_id']}")
+        try:
+            logs_data = client.eval_logs(pack_hash=ph, limit=3)
+        except Exception as exc:
+            console.print(f"  [red]eval_logs fetch failed: {exc}[/]")
+            continue
+        logs = logs_data.get("logs") or []
+        if not logs:
+            console.print("  [dim]No eval logs for this pack.[/]")
+            continue
+        for log in logs:
+            console.print(
+                f"  • {log.get('logType','?'):<6}  "
+                f"{trunc(log.get('validatorHotkey'))}  "
+                f"eval_id={log.get('evalId','?')}  "
+                f"{relative_time(log.get('createdAt'))}"
+            )

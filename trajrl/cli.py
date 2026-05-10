@@ -224,22 +224,32 @@ def submissions(
 
 @app.command()
 def analyze(
-    validator: Annotated[str | None, typer.Argument(help="Validator SS58 hotkey (interactive if omitted).")] = None,
-    uid: Annotated[int | None, typer.Option("--uid", "-u", help="Validator UID (alternative to hotkey).")] = None,
-    deep: Annotated[bool, typer.Option("--deep", help="Drill into top miners.")] = False,
-    deep_n: Annotated[int, typer.Option("--deep-n", help="Number of miners to drill into with --deep.")] = 5,
-    show_logs: Annotated[bool, typer.Option("--logs", help="Show recent eval logs.")] = False,
-    dump: Annotated[bool, typer.Option("--dump", help="Dump raw JSON to file.")] = False,
+    last: Annotated[float, typer.Option(
+        "--last", help="Window size in hours (default 24). Ignored if --epochs is set.",
+    )] = 24.0,
+    epochs: Annotated[int | None, typer.Option(
+        "--epochs", help="Window size in epochs (overrides --last).",
+    )] = None,
+    scenario: Annotated[str | None, typer.Option(
+        "--scenario", help="Filter per-scenario report to a single scenario name.",
+    )] = None,
+    no_compare: Annotated[bool, typer.Option(
+        "--no-compare", help="Skip the validator-sync (cross-validator agreement) report.",
+    )] = False,
+    deep: Annotated[bool, typer.Option(
+        "--deep", help="Drill into eval logs for the top challenger packs in the window.",
+    )] = False,
     base_url: Annotated[str, _base_url_opt] = "https://trajrl.com",
 ) -> None:
-    """Validator deep-dive: scores, weight distribution, scenario heatmap, leaderboard."""
-    client = _client(base_url)
-    hotkey = _resolve_validator(client, validator, uid) if (validator or uid is not None) else None
-    if hotkey is None:
-        hotkey = _analyze.pick_validator_interactive(client)
-        if not hotkey:
-            raise typer.Exit()
-    _analyze.analyze(client, hotkey, deep=deep, deep_n=deep_n, show_logs=show_logs, dump=dump)
+    """Subnet-level analysis: throughput, competition, scores, scenarios, validator sync, winner changes."""
+    _analyze.analyze(
+        _client(base_url),
+        last_hours=last,
+        epochs=epochs,
+        scenario=scenario,
+        deep=deep,
+        no_compare=no_compare,
+    )
 
 
 @app.command()

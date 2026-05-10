@@ -100,6 +100,14 @@ class TrajRLClient:
         """GET /api/queue — pending eval queue."""
         return self._get("/api/queue", params=_compact({"limit": limit}))
 
+    def epoch(self, epoch_id: int | str) -> dict[str, Any]:
+        """GET /api/epoch/:id — full epoch detail incl. per-validator submissions."""
+        return self._get(f"/api/epoch/{epoch_id}")
+
+    def stats(self) -> dict[str, Any]:
+        """GET /api/stats — network totals (reports, cost, llm calls, tokens)."""
+        return self._get("/api/stats")
+
     # -- validators / miners / packs ---------------------------------------
 
     def validators(self) -> dict[str, Any]:
