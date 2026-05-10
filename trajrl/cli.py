@@ -1,11 +1,13 @@
 """trajrl — official Python CLI for TrajectoryRL (Bittensor SN11).
 
-One binary, three groups:
+One binary, two groups:
 
 - ``trajrl skills ...`` — skill hub (browse + install agent skills)
 - ``trajrl <subnet command>`` — live SN11 state (challenge, winner, queue,
   validators, miner, pack, submissions, analyze, logs)
-- ``trajrl chain ...`` — generic Bittensor on-chain queries (metagraph, emission)
+
+For generic Bittensor on-chain queries (metagraph, hyperparams), use
+``btcli`` — the official Bittensor CLI.
 """
 
 from __future__ import annotations
@@ -18,7 +20,6 @@ import typer
 
 from trajrl._version_flag import make_version_callback
 from trajrl.skills.cli import app as skills_app
-from trajrl.chain.cli import app as chain_app
 from trajrl.subnet.api import TrajRLClient
 from trajrl.subnet import display as fmt
 from trajrl.subnet import analyze as _analyze
@@ -26,7 +27,7 @@ from trajrl.subnet import analyze as _analyze
 app = typer.Typer(
     name="trajrl",
     help="Official CLI for TrajectoryRL (Bittensor SN11). Browse skills, "
-         "watch live subnet state, analyze validators, query the chain.",
+         "watch live subnet state, analyze validators.",
     no_args_is_help=True,
     pretty_exceptions_enable=False,
 )
@@ -50,7 +51,6 @@ def main(
 
 # Sub-groups
 app.add_typer(skills_app, name="skills")
-app.add_typer(chain_app, name="chain")
 
 
 # -- shared option defaults ------------------------------------------------

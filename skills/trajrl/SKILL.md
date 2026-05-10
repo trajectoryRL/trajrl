@@ -1,11 +1,13 @@
 ---
 name: trajrl
-description: Official Python CLI for TrajectoryRL (Bittensor SN11). One binary, three groups — skill hub install, live SN11 state (challenge/winner/queue + validator/miner/pack/analyze/logs), and generic Bittensor on-chain queries. Use when the user asks about SN11 internals, eval debugging, validator analysis, or chain state for any Bittensor subnet.
+description: Official Python CLI for TrajectoryRL (Bittensor SN11). One binary, two groups — skill hub install and live SN11 state (challenge/winner/queue + validator/miner/pack/analyze/logs). Use when the user asks about SN11 internals, eval debugging, or validator analysis. For generic Bittensor on-chain queries, use `btcli`.
 ---
 
 # trajrl
 
-Official Python CLI for [TrajectoryRL](https://github.com/trajectoryRL/trajectoryRL) (Bittensor SN11). Reads the public API at `https://trajrl.com` plus the Bittensor chain.
+Official Python CLI for [TrajectoryRL](https://github.com/trajectoryRL/trajectoryRL) (Bittensor SN11). Reads the public API at `https://trajrl.com`.
+
+For generic Bittensor on-chain queries (metagraph, hyperparams, any subnet) use [`btcli`](https://github.com/opentensor/btcli) — the official Bittensor CLI.
 
 ## Setup
 
@@ -28,10 +30,7 @@ trajrl
 ├── pack HOTKEY HASH        download a specific pack + eval results
 ├── submissions [--failed]  recent miner submissions
 ├── analyze VALIDATOR       validator deep-dive
-├── logs                    eval-log archives (list / --show / --dump-to)
-└── chain                   generic Bittensor on-chain queries
-    ├── metagraph
-    └── emission
+└── logs                    eval-log archives (list / --show / --dump-to)
 ```
 
 ## Live state (v6 winner-challenger)
@@ -103,16 +102,6 @@ episodes/episode_N/
   episode.json                           # fixtures + instruction
 ```
 
-## Chain queries (any subnet)
-
-```bash
-trajrl chain metagraph --netuid 11
-trajrl chain metagraph --netuid 11 --network test
-trajrl chain emission --netuid 11
-```
-
-`--network` accepts `finney` (default) | `test` | `local` | `archive` | `ws(s)://endpoint`. Env: `BT_NETWORK`.
-
 ## Skill hub
 
 ```bash
@@ -135,8 +124,6 @@ Every command accepts:
 | `--base-url` | Override API base URL (env: `TRAJRL_BASE_URL`) |
 | `--version` / `-v` | Print version and exit |
 
-`trajrl chain` commands additionally accept `--network` / `-n`.
-
 ## JSON output
 
 Piped output is JSON for every command:
@@ -145,7 +132,6 @@ Piped output is JSON for every command:
 trajrl winner | jq '.current.winner.uid'
 trajrl queue --eligible-only | jq '.queue | length'
 trajrl validators | jq '.validators[] | {uid, name, version, weightTargets}'
-trajrl chain metagraph -u 11 | jq '.neurons | sort_by(-.incentive) | .[0:5]'
 trajrl logs --eval-id <id> | jq '.logs[0].gcsUrl'
 ```
 
@@ -169,14 +155,3 @@ trajrl logs --eval-id <id> | jq '.logs[0].gcsUrl'
 - **Qualified / Rejected** — qualification gate per scenario; rejection happens at `pack_fetch`, `schema_validation`, or `integrity_check`.
 - **Eval log** — per-miner tar.gz with transcripts + evaluation.json + fixtures.
 - **Cycle log** — validator's full eval-cycle log (metagraph sync → weight submission).
-
-**Chain**
-
-- **netuid** — subnet identifier. SN11 = TrajectoryRL.
-- **metagraph** — per-block snapshot of all neurons on a subnet.
-- **stake** — TAO bonded to a neuron's hotkey (including delegations).
-- **incentive** — miner's emission share, derived from validator scores.
-- **dividends** — validator's emission share, from miners they scored.
-- **trust / consensus** — validator-agreement metrics.
-- **tempo** — block interval between weight settlements.
-- **burn / registration_cost** — TAO cost to register a hotkey.
