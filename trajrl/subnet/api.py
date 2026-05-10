@@ -120,22 +120,19 @@ class TrajRLClient:
             raise ValueError("Either validator hotkey or uid must be provided")
         return self._get("/api/scores/by-validator", params={"validator": validator})
 
+    def miners(self) -> dict[str, Any]:
+        """GET /api/miners — full miner roster (uid, hotkey, isActive, packHash, …)."""
+        return self._get("/api/miners")
+
     def miner(self, hotkey: str | None = None, uid: int | None = None) -> dict[str, Any]:
-        """GET /api/miners/:hotkey or resolve UID to hotkey first."""
+        """GET /api/miners/:hotkey or resolve UID to hotkey via /api/miners first."""
         if uid is not None:
-            validators_data = self.validators()
-            for vali in validators_data.get("validators", []):
-                vali_key = vali.get("hotkey")
-                if vali_key:
-                    try:
-                        scores = self.scores_by_validator(vali_key)
-                        for entry in scores.get("entries", []):
-                            if entry.get("uid") == uid:
-                                hotkey = entry.get("minerHotkey")
-                                if hotkey:
-                                    return self._get(f"/api/miners/{hotkey}")
-                    except Exception:
-                        continue
+            roster = self.miners()
+            for m in roster.get("miners", []):
+                if m.get("uid") == uid:
+                    hk = m.get("hotkey")
+                    if hk:
+                        return self._get(f"/api/miners/{hk}")
             raise ValueError(f"Could not resolve UID {uid} to a miner hotkey")
         if hotkey is None:
             raise ValueError("Either hotkey or uid must be provided")
