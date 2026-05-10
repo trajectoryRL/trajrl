@@ -41,22 +41,29 @@ trajrl submissions                  # recent submissions across the network
 trajrl submissions --failed
 ```
 
-## Validator deep-dive
+## Subnet analysis
 
 ```bash
-trajrl analyze                      # interactive validator picker
-trajrl analyze --uid 5 --deep       # full report + drill-down into top miners
-trajrl analyze HOTKEY --logs        # include recent eval logs
+trajrl analyze                              # last 24h, all reports
+trajrl analyze --epochs 50                  # explicit epoch window
+trajrl analyze --last 6                     # last 6 hours
+trajrl analyze --scenario cancel-async-tasks   # focus per-scenario report
+trajrl analyze --no-compare                 # skip the validator-sync table
+trajrl analyze --deep                       # drill into eval logs for top packs
 ```
 
 `analyze` produces, in one report:
 
-1. Score Summary — miners evaluated, qualification rate, score stats
-2. Rejection Breakdown — counts by rejection stage
-3. Weight Distribution — parsed from cycle log, per-miner weights, gate, winner
-4. Scenario Heatmap — pass rate, avg score per scenario
-5. Top 15 Leaderboard — miners ranked by score
-6. With `--deep`: per-miner drill-down
+1. **Throughput** — epochs in window, decisions submitted, decisions/hour, rejection rate
+2. **Competition Health** — distinct challenger packs/miners, outcomes (held/replaced), replace rate, current winner tenure, mean inter-replacement gap
+3. **Score Distribution** — N qualified, mean, p50/p75/p90/p99, histogram of consensus_score
+4. **Per-Scenario** — pass rate, mean score, eval count, top-scoring pack per scenario (filterable with `--scenario`)
+5. **Top 10 Challenger Packs** — best consensus_score in window, with outcome
+6. **Rejection Breakdown** — bucketed reasons (integrity:copy, eval_error, schema_validation, etc.) with sample details
+7. **Miner Pool** — distinct miners, distinct packs, top-10 most-active
+8. **Validator Sync** — per-validator mean Δ vs peer mean; outlier flag with adaptive threshold (1.5× network median)
+9. **Recent Winner Changes** — last 10 replacement events
+10. With `--deep`: drill into eval logs for the top challenger packs in the window
 
 ## Eval logs (debug + audit)
 

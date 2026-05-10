@@ -58,19 +58,33 @@ trajrl submissions                  # recent submissions across the network
 trajrl submissions --failed
 ```
 
-## Validator deep-dive
+## Subnet analysis
 
-The main analytical command. One report covers scores, weight distribution (parsed from cycle log), scenario heatmap, and a top-15 leaderboard.
+`analyze` answers "what happened on the subnet over the last day?" — network throughput, competition health, score distribution, per-scenario stats, validator sync, recent winner changes.
 
 ```bash
-trajrl analyze                      # interactive validator picker
-trajrl analyze HOTKEY               # specific validator
-trajrl analyze --uid 5
-trajrl analyze HOTKEY --deep        # drill into top miners
-trajrl analyze HOTKEY --deep-n 10
-trajrl analyze HOTKEY --logs        # include recent eval logs
-trajrl analyze HOTKEY --dump        # raw JSON to file
+trajrl analyze                              # last 24h, all reports
+trajrl analyze --epochs 50                  # explicit epoch window
+trajrl analyze --last 6                     # last 6 hours
+trajrl analyze --scenario cancel-async-tasks   # filter per-scenario report
+trajrl analyze --no-compare                 # skip validator-sync (faster)
+trajrl analyze --deep                       # drill into eval logs for top packs
 ```
+
+Reports produced:
+
+1. **Throughput** — epochs in window, decisions submitted, decisions/hour, rejection rate
+2. **Competition Health** — distinct challengers, outcomes (held/replaced), replace rate, winner tenure, mean inter-replacement gap
+3. **Score Distribution** — mean, percentiles (p50/p75/p90/p99), histogram of `consensus_score`
+4. **Per-Scenario** — pass rate, mean score, top pack per scenario
+5. **Top 10 Challenger Packs** — best consensus_score in window
+6. **Rejection Breakdown** — bucketed reasons + sample details
+7. **Miner Pool** — distinct miners, distinct packs, top-10 most-active
+8. **Validator Sync** — per-validator mean Δ vs peer mean; outlier flag (1.5× network-median threshold)
+9. **Recent Winner Changes** — last 10 replacement events
+10. **`--deep`** — eval-log drilldown for top packs
+
+In v6 winner-challenger, all validators evaluate the same challenger each epoch, so per-validator leaderboards (the v5 model) no longer apply. The interesting unit is the network's eval pipeline as a whole.
 
 ## Eval logs (debug + audit)
 
