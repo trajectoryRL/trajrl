@@ -16,9 +16,12 @@ def _subtensor(network: str):
     `network` accepts the standard aliases ('finney', 'test', 'local', 'archive')
     or a full `ws(s)://` endpoint URL.
     """
-    import bittensor as bt  # noqa: WPS433 — deferred to avoid heavy import
+    import bittensor as bt  # deferred to avoid heavy import
 
-    return bt.subtensor(network=network)
+    factory = getattr(bt, "Subtensor", None) or getattr(bt, "subtensor", None)
+    if factory is None:
+        raise RuntimeError("bittensor SDK exposes neither Subtensor nor subtensor")
+    return factory(network=network)
 
 
 def _to_float_list(values: Any) -> list[float]:
@@ -30,34 +33,12 @@ def _to_float_list(values: Any) -> list[float]:
     except TypeError:
         try:
             return [float(v) for v in values.tolist()]
-        except Exception:  # noqa: BLE001
+        except Exception:
             return []
 
 
 def get_metagraph(netuid: int, network: str = "finney") -> dict[str, Any]:
-    """Fetch the metagraph for `netuid` and return a serializable dict.
-
-    Output schema:
-
-    ```
-    {
-      "netuid": int,
-      "network": str,
-      "block": int | None,
-      "n": int,
-      "neurons": [
-        {
-          "uid": int, "hotkey": str, "coldkey": str,
-          "stake": float, "incentive": float, "dividends": float,
-          "trust": float, "consensus": float, "emission": float,
-          "active": bool, "validator_permit": bool,
-          "last_update": int,
-        },
-        ...
-      ]
-    }
-    ```
-    """
+    """Fetch the metagraph for `netuid` and return a serializable dict."""
     subtensor = _subtensor(network)
     mg = subtensor.metagraph(netuid=netuid)
 
@@ -76,7 +57,7 @@ def get_metagraph(netuid: int, network: str = "finney") -> dict[str, Any]:
 
     n = len(uids)
 
-    def _at(seq, i, default=None):  # noqa: ANN001
+    def _at(seq, i, default=None):
         try:
             return seq[i]
         except (IndexError, TypeError):
@@ -111,27 +92,7 @@ def get_metagraph(netuid: int, network: str = "finney") -> dict[str, Any]:
 
 
 def get_emission(netuid: int, network: str = "finney") -> dict[str, Any]:
-    """Fetch subnet-level emission and core hyperparams.
-
-    Output schema:
-
-    ```
-    {
-      "netuid": int,
-      "network": str,
-      "tempo": int | None,
-      "emission": float | None,            # subnet emission share
-      "burn": float | None,                # registration burn (TAO)
-      "registration_cost": float | None,   # alias of burn for readability
-      "max_neurons": int | None,
-      "min_allowed_weights": int | None,
-      "max_weights_limit": int | None,
-      "weights_rate_limit": int | None,
-      "immunity_period": int | None,
-      "activity_cutoff": int | None,
-    }
-    ```
-    """
+    """Fetch subnet-level emission and core hyperparams."""
     subtensor = _subtensor(network)
     out: dict[str, Any] = {"netuid": netuid, "network": network}
 
@@ -142,7 +103,7 @@ def get_emission(netuid: int, network: str = "finney") -> dict[str, Any]:
             try:
                 info = getter(netuid=netuid)
                 break
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
 
     if info is not None:
@@ -159,7 +120,7 @@ def get_emission(netuid: int, network: str = "finney") -> dict[str, Any]:
             try:
                 hp = getter(netuid=netuid)
                 break
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
 
     if hp is not None:
@@ -195,5 +156,5 @@ def _maybe_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         try:
             return float(value.tao)  # type: ignore[union-attr]
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
